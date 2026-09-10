@@ -166,7 +166,7 @@ input:focus, select:focus { outline: none; border-color: var(--blue); border-wid
 .row.expiring .ring .fg { stroke: var(--red); }
 .row .del { opacity: 0; border: none; background: none; color: var(--grey-500); font-size: 12px; padding: 4px; }
 .row:hover .del { opacity: 1; }
-.empty { text-align: center; color: var(--text-weak); font-size: 14px; margin-top: 40px; }
+.empty { text-align: center; color: var(--text-weak); font-size: 14px; padding: 48px 16px; }
 
 .foot {
   display: flex; justify-content: space-between; align-items: center;

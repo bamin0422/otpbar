@@ -84,7 +84,14 @@ function renderList() {
   const masked = state.settings?.mask_codes && !reveal;
   $("btn-reveal").setAttribute("aria-pressed", String(reveal));
   $("btn-reveal").textContent = reveal ? "가리기" : "보기";
-  $("list-empty").hidden = items.length > 0;
+  if (items.length === 0) {
+    list.innerHTML = `<div class="empty">
+      등록된 계정이 없습니다.<br>
+      <button id="btn-empty-add" class="link">QR 이미지에서 가져오기</button>
+    </div>`;
+    $("btn-empty-add").addEventListener("click", () => show("view-add"));
+    return;
+  }
   list.innerHTML = items
     .map((it) => {
       const a = it.account;
@@ -184,7 +191,6 @@ $("list").addEventListener("click", async (e) => {
 });
 
 $("btn-add").addEventListener("click", () => show("view-add"));
-$("btn-empty-add").addEventListener("click", () => show("view-add"));
 $("btn-settings").addEventListener("click", async () => {
   await fillSettings();
   show("view-settings");
@@ -326,7 +332,13 @@ async function checkUpdate() {
     await invoke("install_update");
     await dialog.message("설치했습니다. 앱을 다시 시작하면 새 버전으로 실행됩니다.", { title: "OTPBar" });
   } catch (err) {
-    $("foot-status").textContent = `업데이트 실패: ${err}`;
+    const raw = String(err);
+    const friendly = /valid release JSON|404|Not Found/i.test(raw)
+      ? "아직 배포된 업데이트가 없습니다."
+      : /network|dns|timed out|connect/i.test(raw)
+        ? "네트워크에 연결하지 못했습니다."
+        : `업데이트 확인 실패: ${raw}`;
+    $("foot-status").textContent = friendly;
   }
 }
 
