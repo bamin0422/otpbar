@@ -32,6 +32,26 @@ cd ~/Projects/otpbar
 open ~/Applications/OTPBar.app
 ```
 
+## Windows
+
+Windows에서는 같은 CLI를 Python으로 실행하고, 트레이 앱은 `windows/otpbar_tray.py`(pystray)를 씁니다. 비밀키는 Windows DPAPI로 암호화해 `%APPDATA%\otpbar\secrets.json`에 저장하므로 같은 Windows 계정에서만 풀립니다. 알림은 Windows 토스트로 표시합니다.
+
+요구 사항: Python 3.8 이상 (`winget install Python.Python.3.12`)
+
+```powershell
+git clone https://github.com/bamin0422/otpbar $env:USERPROFILE\otpbar
+cd $env:USERPROFILE\otpbar
+powershell -ExecutionPolicy Bypass -File windows\install.ps1 -Login   # -Login: 로그인 시 트레이 자동 실행
+# 새 터미널에서
+otp import C:\Users\me\Downloads\qr.png
+otp list
+otpbar                                                                  # 트레이 앱 실행
+```
+
+`install.ps1`은 pystray·pillow·opencv-python-headless를 사용자 영역에 설치하고, `%LOCALAPPDATA%\otpbar\bin`에 `otp.cmd`·`otpbar.cmd` 런처를 만들어 사용자 PATH에 추가합니다. 제거는 `install.ps1 -Uninstall`입니다(계정 데이터는 남습니다).
+
+Linux에서도 CLI와 트레이 앱이 동작합니다. 비밀키는 `secret-tool`(libsecret)이 있으면 거기에, 없으면 0600 파일에 저장합니다.
+
 ## Google OTP에서 계정 가져오기
 
 1. 폰의 Google Authenticator에서 메뉴(⋮) → 계정 이전 → 계정 내보내기 → 옮길 계정 선택. QR이 표시됩니다(계정이 많으면 여러 장).

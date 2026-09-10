@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""otpbar CLI: macOS Keychain에 저장한 TOTP 비밀키로 일회용 코드를 만든다.
+"""otpbar CLI: 일회용 코드(TOTP)를 만든다. macOS·Windows·Linux 공용.
 
-Claude가 로그인 자동화 중 호출하는 진입점이다. 비밀키는 Keychain(service=otpbar)에,
-계정 메타데이터(발급자·이름·자릿수·주기·알고리즘)는 ~/.config/otpbar/accounts.json에 둔다.
+비밀키 저장소
+  macOS   : Keychain (service "otpbar")            — `security` 명령 사용
+  Windows : DPAPI로 암호화한 %APPDATA%\\otpbar\\secrets.json — 사용자 계정 단위 암호화
+  Linux   : secret-tool(libsecret)이 있으면 사용, 없으면 0600 파일(경고)
+계정 메타데이터(발급자·이름·자릿수·주기·알고리즘)는 설정 폴더의 accounts.json에 둔다.
 
 사용 예
   otp list                              등록 계정과 현재 코드
@@ -31,15 +34,25 @@ import sys
 import time
 import urllib.parse
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
-CONFIG_DIR = os.path.expanduser("~/.config/otpbar")
+IS_MAC = sys.platform == "darwin"
+IS_WIN = os.name == "nt"
+IS_LINUX = sys.platform.startswith("linux")
+
+if IS_WIN:
+    CONFIG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "otpbar")
+else:
+    CONFIG_DIR = os.path.expanduser("~/.config/otpbar")
 INDEX_PATH = os.path.join(CONFIG_DIR, "accounts.json")
+SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.json")  # Windows(DPAPI)·Linux 대체 저장소
 SERVICE = "otpbar"
+ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _find_app_bin() -> str:
-    """설치 위치 후보: Homebrew(opt/otpbar) → ~/Applications → /Applications."""
+    """macOS 앱 설치 위치 후보: Homebrew(opt/otpbar) → ~/Applications → /Applications."""
     candidates = [
         os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "OTPBar.app/Contents/MacOS/OTPBar"),
         "/opt/homebrew/opt/otpbar/OTPBar.app/Contents/MacOS/OTPBar",
@@ -50,11 +63,10 @@ def _find_app_bin() -> str:
     return next((c for c in candidates if os.path.exists(c)), candidates[3])
 
 
-APP_BIN = _find_app_bin()
-ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
+APP_BIN = _find_app_bin() if IS_MAC else ""
 
 
-# ---------- 저장소 ----------
+# ---------- 메타데이터 ----------
 
 def load_index() -> dict:
     if not os.path.exists(INDEX_PATH):
@@ -63,39 +75,128 @@ def load_index() -> dict:
         return json.load(f)
 
 
-def save_index(index: dict) -> None:
+def _write_private_json(path: str, obj) -> None:
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
-    tmp = INDEX_PATH + ".tmp"
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, INDEX_PATH)
-    os.chmod(INDEX_PATH, 0o600)
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    if not IS_WIN:
+        os.chmod(path, 0o600)
 
 
-def keychain_get(account_id: str) -> str:
-    r = subprocess.run(
-        ["security", "find-generic-password", "-s", SERVICE, "-a", account_id, "-w"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        raise SystemExit(f"Keychain에서 '{account_id}' 비밀키를 읽지 못했습니다: {r.stderr.strip()}")
-    return r.stdout.strip()
+def save_index(index: dict) -> None:
+    _write_private_json(INDEX_PATH, index)
 
 
-def keychain_set(account_id: str, secret: str, label: str) -> None:
-    cmd = ["security", "add-generic-password", "-s", SERVICE, "-a", account_id, "-w", secret,
-           "-l", f"otpbar: {label}", "-j", "otpbar TOTP secret (base32)", "-U",
-           "-T", "/usr/bin/security"]
-    if os.path.exists(APP_BIN):
-        cmd += ["-T", APP_BIN]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise SystemExit(f"Keychain 저장 실패({account_id}): {r.stderr.strip()}")
+# ---------- 비밀키 저장소 (플랫폼별) ----------
+
+if IS_WIN:
+    import ctypes
+    import ctypes.wintypes as _wt
+
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", _wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    _crypt32 = ctypes.windll.crypt32
+    _kernel32 = ctypes.windll.kernel32
+    _UI_FORBIDDEN = 0x01
+    _ENTROPY = b"otpbar-v1"
+
+    def _blob(data: bytes):
+        buf = ctypes.create_string_buffer(data, len(data))
+        return _DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf
+
+    def _dpapi(data: bytes, protect: bool) -> bytes:
+        inb, _keep1 = _blob(data)
+        ent, _keep2 = _blob(_ENTROPY)
+        out = _DATA_BLOB()
+        if protect:
+            ok = _crypt32.CryptProtectData(ctypes.byref(inb), "otpbar", ctypes.byref(ent), None, None,
+                                           _UI_FORBIDDEN, ctypes.byref(out))
+        else:
+            ok = _crypt32.CryptUnprotectData(ctypes.byref(inb), None, ctypes.byref(ent), None, None,
+                                             _UI_FORBIDDEN, ctypes.byref(out))
+        if not ok:
+            raise SystemExit("DPAPI 처리 실패 (Windows 계정 암호화). 다른 사용자 계정으로 저장한 파일은 열 수 없습니다.")
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            _kernel32.LocalFree(out.pbData)
 
 
-def keychain_delete(account_id: str) -> None:
-    subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account_id],
-                   capture_output=True, text=True)
+def _secrets_file_load() -> dict:
+    if not os.path.exists(SECRETS_PATH):
+        return {}
+    with open(SECRETS_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _secrets_file_save(d: dict) -> None:
+    _write_private_json(SECRETS_PATH, d)
+
+
+def store_get(account_id: str) -> str:
+    if IS_MAC:
+        r = subprocess.run(["security", "find-generic-password", "-s", SERVICE, "-a", account_id, "-w"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"Keychain에서 '{account_id}' 비밀키를 읽지 못했습니다: {r.stderr.strip()}")
+        return r.stdout.strip()
+    if IS_WIN:
+        d = _secrets_file_load()
+        if account_id not in d:
+            raise SystemExit(f"'{account_id}' 비밀키가 없습니다 ({SECRETS_PATH}).")
+        return _dpapi(base64.b64decode(d[account_id]), protect=False).decode("utf-8")
+    if shutil.which("secret-tool"):
+        r = subprocess.run(["secret-tool", "lookup", "service", SERVICE, "account", account_id],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    d = _secrets_file_load()
+    if account_id not in d:
+        raise SystemExit(f"'{account_id}' 비밀키가 없습니다.")
+    return d[account_id]
+
+
+def store_set(account_id: str, secret: str, label: str) -> None:
+    if IS_MAC:
+        cmd = ["security", "add-generic-password", "-s", SERVICE, "-a", account_id, "-w", secret,
+               "-l", f"otpbar: {label}", "-j", "otpbar TOTP secret (base32)", "-U",
+               "-T", "/usr/bin/security"]
+        if APP_BIN and os.path.exists(APP_BIN):
+            cmd += ["-T", APP_BIN]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"Keychain 저장 실패({account_id}): {r.stderr.strip()}")
+        return
+    if IS_WIN:
+        d = _secrets_file_load()
+        d[account_id] = base64.b64encode(_dpapi(secret.encode("utf-8"), protect=True)).decode("ascii")
+        _secrets_file_save(d)
+        return
+    if shutil.which("secret-tool"):
+        r = subprocess.run(["secret-tool", "store", "--label", f"otpbar: {label}", "service", SERVICE, "account", account_id],
+                           input=secret, capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+    print("경고: secret-tool이 없어 비밀키를 0600 파일에 평문 저장합니다.", file=sys.stderr)
+    d = _secrets_file_load()
+    d[account_id] = secret
+    _secrets_file_save(d)
+
+
+def store_delete(account_id: str) -> None:
+    if IS_MAC:
+        subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account_id],
+                       capture_output=True, text=True)
+        return
+    if IS_LINUX and shutil.which("secret-tool"):
+        subprocess.run(["secret-tool", "clear", "service", SERVICE, "account", account_id], capture_output=True)
+    d = _secrets_file_load()
+    if account_id in d:
+        del d[account_id]
+        _secrets_file_save(d)
 
 
 # ---------- TOTP ----------
@@ -118,6 +219,10 @@ def totp(secret_b32: str, digits: int = 6, period: int = 30, algorithm: str = "S
 def remaining(period: int = 30, at: float | None = None) -> int:
     t = time.time() if at is None else at
     return int(period - (t % period))
+
+
+def fmt_code(code: str) -> str:
+    return f"{code[:3]} {code[3:]}" if len(code) == 6 else code
 
 
 # ---------- 가져오기: otpauth URI / Google 내보내기(protobuf) ----------
@@ -204,13 +309,39 @@ def parse_otpauth(uri: str) -> dict:
 
 
 def decode_qr_image(path: str) -> list[str]:
-    tool = shutil.which("otpqr") or os.path.expanduser("~/bin/otpqr")
-    if not os.path.exists(tool):
-        raise SystemExit("otpqr(QR 디코더)를 찾지 못했습니다. ~/Projects/otpbar/build.sh 를 먼저 실행하십시오.")
-    r = subprocess.run([tool, path], capture_output=True, text=True)
-    if r.returncode != 0:
-        raise SystemExit(f"QR 인식 실패: {r.stderr.strip() or r.stdout.strip()}")
-    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    """QR 이미지 → payload 목록. macOS: otpqr(Vision). 그 외: OpenCV → zbarimg 순."""
+    if IS_MAC:
+        tool = shutil.which("otpqr") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "otpqr")
+        if os.path.exists(tool):
+            r = subprocess.run([tool, path], capture_output=True, text=True)
+            if r.returncode != 0:
+                raise SystemExit(f"QR 인식 실패: {r.stderr.strip() or r.stdout.strip()}")
+            return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        cv2 = None
+    if cv2 is not None:
+        img = cv2.imread(path)
+        if img is None:
+            raise SystemExit(f"이미지를 열 수 없습니다: {path}")
+        det = cv2.QRCodeDetector()
+        try:
+            ok, decoded, _pts, _ = det.detectAndDecodeMulti(img)
+            found = [d for d in decoded if d] if ok else []
+        except Exception:
+            found = []
+        if not found:
+            single, _pts, _ = det.detectAndDecode(img)
+            found = [single] if single else []
+        if found:
+            return found
+        raise SystemExit("QR 코드를 찾지 못했습니다. 이미지가 선명한지, QR 전체가 들어 있는지 확인하십시오.")
+    if shutil.which("zbarimg"):
+        r = subprocess.run(["zbarimg", "--raw", "-q", path], capture_output=True, text=True)
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    raise SystemExit("QR 디코더가 없습니다. Windows/Linux: `python -m pip install opencv-python-headless` 후 다시 실행하십시오. "
+                     "또는 QR 내용을 문자열로 `otp import 'otpauth-migration://...'` 형태로 넘기십시오.")
 
 
 def slugify(*parts: str) -> str:
@@ -238,7 +369,7 @@ def add_account(index: dict, acc: dict, replace: bool = False) -> str:
     if dup and not replace:
         return f"이미 있음: {acc['issuer']} · {acc['name']} (id={dup['id']}) — --replace 로 덮어쓸 수 있음"
     account_id = dup["id"] if dup else unique_id(index, slugify(acc["issuer"], acc["name"]))
-    keychain_set(account_id, normalize_secret(acc["secret"]).rstrip("="), f"{acc['issuer']} {acc['name']}")
+    store_set(account_id, normalize_secret(acc["secret"]).rstrip("="), f"{acc['issuer']} {acc['name']}")
     meta = {"id": account_id, "issuer": acc["issuer"], "name": acc["name"],
             "algorithm": acc["algorithm"], "digits": int(acc["digits"]), "period": int(acc.get("period", 30)),
             "type": "totp", "added": dt.date.today().isoformat()}
@@ -249,20 +380,52 @@ def add_account(index: dict, acc: dict, replace: bool = False) -> str:
     return f"등록: {acc['issuer']} · {acc['name']} (id={account_id})"
 
 
-# ---------- 알림·복사 ----------
+# ---------- 알림·복사 (플랫폼별) ----------
+
+_TOAST_PS = r"""
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$t = $xml.GetElementsByTagName("text")
+$t.Item(0).AppendChild($xml.CreateTextNode($env:OTPBAR_TITLE)) | Out-Null
+$t.Item(1).AppendChild($xml.CreateTextNode($env:OTPBAR_MSG)) | Out-Null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)
+"""
+
 
 def notify(title: str, subtitle: str, message: str) -> None:
-    script = ['on run argv',
-              'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv) sound name "Pop"',
-              'end run']
-    args = ["osascript"]
-    for line in script:
-        args += ["-e", line]
-    subprocess.run(args + [message, title, subtitle], capture_output=True)
+    try:
+        if IS_MAC:
+            script = ['on run argv',
+                      'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv) sound name "Pop"',
+                      'end run']
+            args = ["osascript"]
+            for line in script:
+                args += ["-e", line]
+            subprocess.run(args + [message, title, subtitle], capture_output=True)
+        elif IS_WIN:
+            env = dict(os.environ, OTPBAR_TITLE=f"{title} · {subtitle}" if subtitle else title, OTPBAR_MSG=message)
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", _TOAST_PS],
+                           capture_output=True, env=env, creationflags=NO_WINDOW)
+        elif shutil.which("notify-send"):
+            subprocess.run(["notify-send", f"{title} · {subtitle}" if subtitle else title, message], capture_output=True)
+    except Exception as e:  # 알림 실패는 치명적이지 않다
+        print(f"(알림 실패: {e})", file=sys.stderr)
 
 
 def copy_clipboard(text: str) -> None:
-    subprocess.run(["pbcopy"], input=text, text=True, check=False)
+    if IS_MAC:
+        subprocess.run(["pbcopy"], input=text, text=True, check=False)
+    elif IS_WIN:
+        subprocess.run(["clip"], input=text, text=True, check=False, creationflags=NO_WINDOW)
+    elif shutil.which("wl-copy"):
+        subprocess.run(["wl-copy"], input=text, text=True, check=False)
+    elif shutil.which("xclip"):
+        subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, check=False)
+    else:
+        print("(클립보드 도구가 없습니다: wl-copy 또는 xclip 필요)", file=sys.stderr)
 
 
 # ---------- 조회 ----------
@@ -285,10 +448,6 @@ def find_account(index: dict, query: str) -> dict:
     raise SystemExit(f"'{query}'가 여러 계정과 일치합니다: {names}. id를 지정하십시오.")
 
 
-def fmt_code(code: str) -> str:
-    return f"{code[:3]} {code[3:]}" if len(code) == 6 else code
-
-
 # ---------- 명령 ----------
 
 def cmd_list(args) -> int:
@@ -299,7 +458,7 @@ def cmd_list(args) -> int:
     rows = []
     for a in index["accounts"]:
         try:
-            code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+            code = totp(store_get(a["id"]), a["digits"], a["period"], a["algorithm"])
         except SystemExit as e:
             code = f"오류: {e}"
         rows.append((a["id"], a["issuer"], a["name"], code, f"{remaining(a['period'])}s"))
@@ -307,8 +466,8 @@ def cmd_list(args) -> int:
         print(json.dumps([{"id": r[0], "issuer": r[1], "name": r[2], "code": r[3], "remaining": r[4]} for r in rows],
                          ensure_ascii=False, indent=2))
         return 0
-    w = [max(len(str(r[i])) for r in rows + [("ID", "발급자", "이름", "코드", "남음")]) for i in range(5)]
     hdr = ("ID", "발급자", "이름", "코드", "남음")
+    w = [max(len(str(r[i])) for r in rows + [hdr]) for i in range(5)]
     print("  ".join(h.ljust(w[i]) for i, h in enumerate(hdr)))
     for r in rows:
         print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(r)))
@@ -318,11 +477,11 @@ def cmd_list(args) -> int:
 def cmd_get(args) -> int:
     index = load_index()
     a = find_account(index, args.account)
-    code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+    code = totp(store_get(a["id"]), a["digits"], a["period"], a["algorithm"])
     rem = remaining(a["period"])
     if rem < 5 and not args.no_wait:
         time.sleep(rem + 0.2)  # 만료 직전이면 다음 코드를 기다린다 (입력 중 만료 방지)
-        code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+        code = totp(store_get(a["id"]), a["digits"], a["period"], a["algorithm"])
         rem = remaining(a["period"])
     if args.copy:
         copy_clipboard(code)
@@ -362,7 +521,7 @@ def cmd_import(args) -> int:
     for acc in found:
         print(add_account(index, acc, replace=args.replace))
     save_index(index)
-    print(f"완료: 계정 {len(index['accounts'])}개 등록 상태. 메뉴바 앱은 다음에 메뉴를 열 때 반영됩니다.")
+    print(f"완료: 계정 {len(index['accounts'])}개 등록 상태. 메뉴바·트레이 앱은 다음에 메뉴를 열 때 반영됩니다.")
     return 0
 
 
@@ -384,7 +543,7 @@ def cmd_add(args) -> int:
 def cmd_remove(args) -> int:
     index = load_index()
     a = find_account(index, args.account)
-    keychain_delete(a["id"])
+    store_delete(a["id"])
     index["accounts"] = [x for x in index["accounts"] if x["id"] != a["id"]]
     save_index(index)
     print(f"삭제: {a['issuer']} · {a['name']} (id={a['id']})")
@@ -405,6 +564,7 @@ def cmd_selftest(args) -> int:
         got = totp(secret, 8, 30, algo, at=t)
         ok &= got == expect
         print(f"{'OK ' if got == expect else 'FAIL'} {algo} t={t} expect={expect} got={got}")
+
     # Google 내보내기(protobuf) 왕복 검증: 직접 인코딩한 페이로드를 디코드한다
     def enc_varint(n):
         out = bytearray()
@@ -413,8 +573,10 @@ def cmd_selftest(args) -> int:
             out.append(b | (0x80 if n else 0))
             if not n:
                 return bytes(out)
+
     def enc_field(fn, wt, v):
         return enc_varint((fn << 3) | wt) + (enc_varint(len(v)) + v if wt == 2 else enc_varint(v))
+
     secret_raw = base64.b32decode("JBSWY3DPEHPK3PXP")
     param = (enc_field(1, 2, secret_raw) + enc_field(2, 2, b"Jira:bamin") + enc_field(3, 2, b"Jira")
              + enc_field(4, 0, 1) + enc_field(5, 0, 1) + enc_field(6, 0, 2))
@@ -429,43 +591,56 @@ def cmd_selftest(args) -> int:
     plain_ok = plain["issuer"] == "Jira" and plain["name"] == "user@example.com" and plain["secret"] == "JBSWY3DPEHPK3PXP"
     ok &= plain_ok
     print(f"{'OK ' if plain_ok else 'FAIL'} otpauth URI parse → {plain}")
+
+    # 플랫폼 저장소 왕복 (임시 id, 끝나면 삭제)
+    if IS_WIN:
+        tid = "otpbar-selftest-tmp"
+        try:
+            store_set(tid, "JBSWY3DPEHPK3PXP", "selftest")
+            st_ok = store_get(tid) == "JBSWY3DPEHPK3PXP"
+        finally:
+            store_delete(tid)
+        ok &= st_ok
+        print(f"{'OK ' if st_ok else 'FAIL'} DPAPI 저장소 왕복")
     print("selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
 
 def cmd_secrets(args) -> int:
-    """메뉴바 앱 전용: 계정 메타와 비밀키를 JSON으로 출력한다.
-
-    앱이 Keychain을 직접 읽으면 macOS가 파티션 검사로 키체인 암호를 요구하므로,
-    `security`(apple-tool 파티션)로 읽을 수 있는 CLI가 대신 읽어 앱에 넘긴다.
-    """
+    """메뉴바·트레이 앱 전용: 계정 메타와 비밀키를 JSON으로 출력한다."""
     if not args.json:
-        raise SystemExit("비밀키 출력은 --json 을 명시해야 합니다 (메뉴바 앱 내부용).")
+        raise SystemExit("비밀키 출력은 --json 을 명시해야 합니다 (앱 내부용).")
     index = load_index()
     out = []
     for a in index["accounts"]:
         out.append({k: a[k] for k in ("id", "issuer", "name", "algorithm", "digits", "period")})
-        out[-1]["secret"] = keychain_get(a["id"])
+        out[-1]["secret"] = store_get(a["id"])
     print(json.dumps(out, ensure_ascii=False))
     return 0
 
 
 def cmd_trust_app(args) -> int:
-    """앱을 다시 빌드하면 서명이 바뀌어 Keychain 접근 허용이 풀린다. 모든 항목의 허용 목록을 다시 쓴다."""
+    """macOS 전용. 앱에 Keychain 접근 허용을 다시 부여한다(보통 불필요)."""
+    if not IS_MAC:
+        raise SystemExit("macOS 전용 명령입니다.")
     index = load_index()
     if not os.path.exists(APP_BIN):
         raise SystemExit(f"앱이 설치되어 있지 않습니다: {APP_BIN}")
     for a in index["accounts"]:
-        keychain_set(a["id"], keychain_get(a["id"]), f"{a['issuer']} {a['name']}")
+        store_set(a["id"], store_get(a["id"]), f"{a['issuer']} {a['name']}")
     print(f"Keychain 접근 허용 갱신: 계정 {len(index['accounts'])}개 → {APP_BIN}")
     return 0
 
 
 def cmd_paths(args) -> int:
+    print(f"platform: {'macOS' if IS_MAC else 'Windows' if IS_WIN else 'Linux'}")
     print(f"index   : {INDEX_PATH}")
-    print(f"keychain: service={SERVICE} (security find-generic-password -s {SERVICE} -a <id> -w)")
-    print(f"otpqr   : {shutil.which('otpqr') or '(없음)'}")
-    print(f"app     : {APP_BIN if os.path.exists(APP_BIN) else '(설치 안 됨)'}")
+    if IS_MAC:
+        print(f"secrets : Keychain service={SERVICE}")
+        print(f"otpqr   : {shutil.which('otpqr') or '(없음)'}")
+        print(f"app     : {APP_BIN if os.path.exists(APP_BIN) else '(설치 안 됨)'}")
+    else:
+        print(f"secrets : {SECRETS_PATH} ({'DPAPI 암호화' if IS_WIN else 'secret-tool 또는 0600 파일'})")
     return 0
 
 
@@ -504,18 +679,18 @@ def main(argv=None) -> int:
     s.add_argument("--replace", action="store_true")
     s.set_defaults(fn=cmd_add)
 
-    s = sp.add_parser("remove", help="계정 삭제 (Keychain 비밀키 포함)")
+    s = sp.add_parser("remove", help="계정 삭제 (비밀키 포함)")
     s.add_argument("account")
     s.set_defaults(fn=cmd_remove)
 
-    s = sp.add_parser("selftest", help="RFC 6238 벡터·가져오기 파서 자체 검증")
+    s = sp.add_parser("selftest", help="RFC 6238 벡터·가져오기 파서·저장소 자체 검증")
     s.set_defaults(fn=cmd_selftest)
 
-    s = sp.add_parser("secrets", help="(메뉴바 앱 내부용) 계정 메타와 비밀키 JSON 출력")
+    s = sp.add_parser("secrets", help="(앱 내부용) 계정 메타와 비밀키 JSON 출력")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_secrets)
 
-    s = sp.add_parser("trust-app", help="OTPBar.app에 Keychain 접근 허용 부여 (보통 불필요)")
+    s = sp.add_parser("trust-app", help="(macOS) OTPBar.app에 Keychain 접근 허용 부여")
     s.set_defaults(fn=cmd_trust_app)
 
     s = sp.add_parser("paths", help="저장 위치 표시")
