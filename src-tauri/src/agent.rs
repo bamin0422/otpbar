@@ -143,7 +143,9 @@ fn dispatch(app: &AppHandle, state: &AppState, request: Request) -> Result<Respo
         }
 
         Request::Show => {
-            ui::show_window(app);
+            // 창이 없는 앱이다. 메뉴를 새로 그리고 어디를 눌러야 하는지 알린다.
+            ui::refresh(app);
+            ui::notify(app, "OTPBar", "메뉴바(트레이)의 열쇠 아이콘을 누르십시오.");
             Ok(Response::Ok)
         }
 

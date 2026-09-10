@@ -43,6 +43,19 @@ impl Default for KdfParams {
 }
 
 impl KdfParams {
+    /// 자동 해제용 경량 파라미터.
+    ///
+    /// 이 경로의 "암호"는 사람이 정한 문자열이 아니라 무작위 256비트 키다. 사전 공격·
+    /// 무차별 대입이 성립하지 않으므로 키 유도를 무겁게 할 이유가 없다. 사용자 암호를
+    /// 쓸 때는 [`KdfParams::default`]의 높은 비용을 쓴다.
+    pub fn light() -> Self {
+        KdfParams {
+            m_cost: 8_192,
+            t_cost: 1,
+            p_cost: 1,
+        }
+    }
+
     fn build(&self) -> Result<Argon2<'static>> {
         let params = Params::new(self.m_cost, self.t_cost, self.p_cost, Some(KEY_LEN))
             .map_err(|e| Error::Corrupt(format!("KDF 매개변수 오류: {e}")))?;

@@ -1,4 +1,4 @@
-//! 창·알림·클립보드 같은 사용자 표면.
+//! 알림과 클립보드. 창이 없으므로 사용자에게 말하는 수단은 시스템 알림뿐이다.
 //!
 //! 기본값은 보수적이다. 알림에는 코드를 넣지 않고(잠금 화면 미리보기 노출 방지),
 //! 복사한 코드는 설정한 시간 뒤 클립보드에서 지운다.
@@ -6,41 +6,13 @@
 use std::time::Duration;
 
 use otpbar_core::Settings;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_notification::NotificationExt;
 
-pub const EVENT_REFRESH: &str = "otpbar://refresh";
-
-/// 프론트엔드와 트레이에 "상태가 바뀌었다"고 알린다.
+/// 메뉴를 다시 그린다. 상태가 바뀔 때마다 부른다.
 pub fn refresh(app: &AppHandle) {
-    app.emit(EVENT_REFRESH, ()).ok();
     crate::tray::rebuild(app);
-}
-
-pub fn show_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        win.show().ok();
-        win.unminimize().ok();
-        win.set_focus().ok();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // 창을 보여 줄 때만 Dock에 나타나게 한다(평소에는 메뉴바 전용).
-        app.set_activation_policy(tauri::ActivationPolicy::Regular)
-            .ok();
-    }
-}
-
-pub fn hide_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        win.hide().ok();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        app.set_activation_policy(tauri::ActivationPolicy::Accessory)
-            .ok();
-    }
 }
 
 /// 클립보드에 코드를 넣고, 지정 시간 뒤 그대로 남아 있으면 지운다.
@@ -79,13 +51,11 @@ pub fn notify_code_used(
         String::new()
     };
     let suffix = if copied { ", 복사됨" } else { "" };
-    let body = format!("{shown}({remaining}초 남음{suffix})");
-    app.notification()
-        .builder()
-        .title("OTP 코드 사용")
-        .body(format!("{detail}\n{body}"))
-        .show()
-        .ok();
+    notify(
+        app,
+        "OTP 코드 사용",
+        &format!("{detail}\n{shown}({remaining}초 남음{suffix})"),
+    );
 }
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) {

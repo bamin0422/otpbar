@@ -197,6 +197,8 @@ impl Vault {
     /// 암호문이므로 금고만 복사해 가서는 열 수 없다.
     pub fn create_auto(&mut self) -> Result<()> {
         let passphrase = crate::crypto::random_token();
+        // 무작위 키에는 무거운 KDF가 필요 없다. 앱 시작이 빨라진다.
+        self.kdf_params = KdfParams::light();
         self.create(&passphrase)?;
         crate::autounlock::store(&passphrase)?;
         Ok(())
@@ -216,6 +218,8 @@ impl Vault {
         let Some(current) = crate::autounlock::load()? else {
             return Err(Error::other("이미 마스터 암호로 보호되고 있습니다"));
         };
+        // 사람이 정한 암호로 바뀌므로 키 유도 비용을 기본값(무겁게)으로 올린다.
+        self.kdf_params = KdfParams::default();
         self.change_password(&current, new_password)?;
         crate::autounlock::clear()?;
         Ok(())
@@ -224,6 +228,8 @@ impl Vault {
     /// 마스터 암호 보호를 풀고 자동 해제로 되돌린다.
     pub fn disable_password_protection(&mut self, current_password: &str) -> Result<()> {
         let passphrase = crate::crypto::random_token();
+        self.unlock(current_password)?;
+        self.kdf_params = KdfParams::light();
         self.change_password(current_password, &passphrase)?;
         crate::autounlock::store(&passphrase)?;
         Ok(())
