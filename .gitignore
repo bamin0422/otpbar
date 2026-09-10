@@ -1,0 +1,15 @@
+# 빌드 산출물
+build/
+bin/
+*.o
+*.dSYM/
+
+# 시험용 QR 이미지·URI (비밀키가 들어 있음)
+*.png
+*.jpg
+*.jpeg
+*.heic
+*_uri.txt
+
+# macOS
+.DS_Store

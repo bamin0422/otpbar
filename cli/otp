@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""otpbar CLI: macOS Keychain에 저장한 TOTP 비밀키로 일회용 코드를 만든다.
+
+Claude가 로그인 자동화 중 호출하는 진입점이다. 비밀키는 Keychain(service=otpbar)에,
+계정 메타데이터(발급자·이름·자릿수·주기·알고리즘)는 ~/.config/otpbar/accounts.json에 둔다.
+
+사용 예
+  otp list                              등록 계정과 현재 코드
+  otp get google --purpose "웹메일 로그인"  코드 1개를 stdout에 출력(+알림)
+  otp get google --copy                 클립보드에 복사
+  otp import ~/Desktop/qr.png           Google OTP 내보내기 QR 또는 otpauth QR 이미지 가져오기
+  otp import 'otpauth://totp/...'       URI 문자열 직접 가져오기
+  otp add --issuer Jira --name me --secret JBSWY3DPEHPK3PXP
+  otp remove jira-me
+  otp selftest                          RFC 6238 벡터로 자체 검증
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import hashlib
+import hmac
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import urllib.parse
+
+__version__ = "1.0.0"
+
+CONFIG_DIR = os.path.expanduser("~/.config/otpbar")
+INDEX_PATH = os.path.join(CONFIG_DIR, "accounts.json")
+SERVICE = "otpbar"
+
+
+def _find_app_bin() -> str:
+    """설치 위치 후보: Homebrew(opt/otpbar) → ~/Applications → /Applications."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "OTPBar.app/Contents/MacOS/OTPBar"),
+        "/opt/homebrew/opt/otpbar/OTPBar.app/Contents/MacOS/OTPBar",
+        "/usr/local/opt/otpbar/OTPBar.app/Contents/MacOS/OTPBar",
+        os.path.expanduser("~/Applications/OTPBar.app/Contents/MacOS/OTPBar"),
+        "/Applications/OTPBar.app/Contents/MacOS/OTPBar",
+    ]
+    return next((c for c in candidates if os.path.exists(c)), candidates[3])
+
+
+APP_BIN = _find_app_bin()
+ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
+
+
+# ---------- 저장소 ----------
+
+def load_index() -> dict:
+    if not os.path.exists(INDEX_PATH):
+        return {"accounts": []}
+    with open(INDEX_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_index(index: dict) -> None:
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    tmp = INDEX_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, INDEX_PATH)
+    os.chmod(INDEX_PATH, 0o600)
+
+
+def keychain_get(account_id: str) -> str:
+    r = subprocess.run(
+        ["security", "find-generic-password", "-s", SERVICE, "-a", account_id, "-w"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise SystemExit(f"Keychain에서 '{account_id}' 비밀키를 읽지 못했습니다: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def keychain_set(account_id: str, secret: str, label: str) -> None:
+    cmd = ["security", "add-generic-password", "-s", SERVICE, "-a", account_id, "-w", secret,
+           "-l", f"otpbar: {label}", "-j", "otpbar TOTP secret (base32)", "-U",
+           "-T", "/usr/bin/security"]
+    if os.path.exists(APP_BIN):
+        cmd += ["-T", APP_BIN]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"Keychain 저장 실패({account_id}): {r.stderr.strip()}")
+
+
+def keychain_delete(account_id: str) -> None:
+    subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account_id],
+                   capture_output=True, text=True)
+
+
+# ---------- TOTP ----------
+
+def normalize_secret(s: str) -> str:
+    s = re.sub(r"[\s-]", "", s).upper().rstrip("=")
+    return s + "=" * (-len(s) % 8)
+
+
+def totp(secret_b32: str, digits: int = 6, period: int = 30, algorithm: str = "SHA1",
+         at: float | None = None) -> str:
+    key = base64.b32decode(normalize_secret(secret_b32), casefold=True)
+    counter = int((time.time() if at is None else at) // period)
+    digest = hmac.new(key, struct.pack(">Q", counter), ALGOS[algorithm.upper()]).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
+def remaining(period: int = 30, at: float | None = None) -> int:
+    t = time.time() if at is None else at
+    return int(period - (t % period))
+
+
+# ---------- 가져오기: otpauth URI / Google 내보내기(protobuf) ----------
+
+def _varint(b: bytes, i: int):
+    shift = result = 0
+    while True:
+        c = b[i]
+        i += 1
+        result |= (c & 0x7F) << shift
+        if not c & 0x80:
+            return result, i
+        shift += 7
+
+
+def _fields(b: bytes):
+    i = 0
+    while i < len(b):
+        key, i = _varint(b, i)
+        fn, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = _varint(b, i)
+        elif wt == 2:
+            ln, i = _varint(b, i)
+            v, i = b[i:i + ln], i + ln
+        elif wt == 1:
+            v, i = b[i:i + 8], i + 8
+        elif wt == 5:
+            v, i = b[i:i + 4], i + 4
+        else:
+            raise ValueError(f"지원하지 않는 wire type {wt}")
+        yield fn, wt, v
+
+
+def parse_migration(uri: str) -> list[dict]:
+    """otpauth-migration://offline?data=<base64 protobuf> 를 계정 목록으로 푼다."""
+    q = urllib.parse.urlparse(uri).query
+    data = urllib.parse.parse_qs(q).get("data", [""])[0]
+    data = data.replace(" ", "+")
+    payload = base64.b64decode(data + "=" * (-len(data) % 4))
+    algo_map = {0: "SHA1", 1: "SHA1", 2: "SHA256", 3: "SHA512", 4: "MD5"}
+    digit_map = {0: 6, 1: 6, 2: 8}
+    type_map = {0: "totp", 1: "hotp", 2: "totp"}
+    out = []
+    for fn, wt, v in _fields(payload):
+        if fn != 1 or wt != 2:
+            continue
+        acc = {"secret": "", "name": "", "issuer": "", "algorithm": "SHA1", "digits": 6,
+               "type": "totp", "period": 30}
+        for pfn, pwt, pv in _fields(v):
+            if pfn == 1:
+                acc["secret"] = base64.b32encode(pv).decode().rstrip("=")
+            elif pfn == 2:
+                acc["name"] = pv.decode("utf-8", "replace")
+            elif pfn == 3:
+                acc["issuer"] = pv.decode("utf-8", "replace")
+            elif pfn == 4:
+                acc["algorithm"] = algo_map.get(pv, "SHA1")
+            elif pfn == 5:
+                acc["digits"] = digit_map.get(pv, 6)
+            elif pfn == 6:
+                acc["type"] = type_map.get(pv, "totp")
+        if not acc["issuer"] and ":" in acc["name"]:
+            acc["issuer"], acc["name"] = [x.strip() for x in acc["name"].split(":", 1)]
+        elif acc["issuer"] and acc["name"].lower().startswith(acc["issuer"].lower() + ":"):
+            acc["name"] = acc["name"].split(":", 1)[1].strip()
+        out.append(acc)
+    return out
+
+
+def parse_otpauth(uri: str) -> dict:
+    u = urllib.parse.urlparse(uri)
+    if u.scheme != "otpauth":
+        raise ValueError("otpauth:// URI가 아닙니다")
+    label = urllib.parse.unquote(u.path.lstrip("/"))
+    q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+    issuer, name = "", label
+    if ":" in label:
+        issuer, name = [x.strip() for x in label.split(":", 1)]
+    issuer = q.get("issuer", issuer)
+    return {"secret": q["secret"], "name": name, "issuer": issuer,
+            "algorithm": q.get("algorithm", "SHA1").upper(), "digits": int(q.get("digits", 6)),
+            "period": int(q.get("period", 30)), "type": u.netloc.lower() or "totp"}
+
+
+def decode_qr_image(path: str) -> list[str]:
+    tool = shutil.which("otpqr") or os.path.expanduser("~/bin/otpqr")
+    if not os.path.exists(tool):
+        raise SystemExit("otpqr(QR 디코더)를 찾지 못했습니다. ~/Projects/otpbar/build.sh 를 먼저 실행하십시오.")
+    r = subprocess.run([tool, path], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"QR 인식 실패: {r.stderr.strip() or r.stdout.strip()}")
+    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+
+
+def slugify(*parts: str) -> str:
+    s = "-".join(p for p in parts if p).lower()
+    s = re.sub(r"[^0-9a-z가-힣]+", "-", s).strip("-")
+    return s or "account"
+
+
+def unique_id(index: dict, base: str) -> str:
+    ids = {a["id"] for a in index["accounts"]}
+    cand, n = base, 2
+    while cand in ids:
+        cand = f"{base}-{n}"
+        n += 1
+    return cand
+
+
+def add_account(index: dict, acc: dict, replace: bool = False) -> str:
+    if acc.get("type", "totp") != "totp":
+        return f"건너뜀(HOTP 미지원): {acc.get('issuer')} {acc.get('name')}"
+    if acc["algorithm"] not in ALGOS:
+        return f"건너뜀(알고리즘 {acc['algorithm']} 미지원): {acc.get('issuer')} {acc.get('name')}"
+    dup = next((a for a in index["accounts"]
+                if a["issuer"] == acc["issuer"] and a["name"] == acc["name"]), None)
+    if dup and not replace:
+        return f"이미 있음: {acc['issuer']} · {acc['name']} (id={dup['id']}) — --replace 로 덮어쓸 수 있음"
+    account_id = dup["id"] if dup else unique_id(index, slugify(acc["issuer"], acc["name"]))
+    keychain_set(account_id, normalize_secret(acc["secret"]).rstrip("="), f"{acc['issuer']} {acc['name']}")
+    meta = {"id": account_id, "issuer": acc["issuer"], "name": acc["name"],
+            "algorithm": acc["algorithm"], "digits": int(acc["digits"]), "period": int(acc.get("period", 30)),
+            "type": "totp", "added": dt.date.today().isoformat()}
+    if dup:
+        index["accounts"] = [meta if a["id"] == account_id else a for a in index["accounts"]]
+    else:
+        index["accounts"].append(meta)
+    return f"등록: {acc['issuer']} · {acc['name']} (id={account_id})"
+
+
+# ---------- 알림·복사 ----------
+
+def notify(title: str, subtitle: str, message: str) -> None:
+    script = ['on run argv',
+              'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv) sound name "Pop"',
+              'end run']
+    args = ["osascript"]
+    for line in script:
+        args += ["-e", line]
+    subprocess.run(args + [message, title, subtitle], capture_output=True)
+
+
+def copy_clipboard(text: str) -> None:
+    subprocess.run(["pbcopy"], input=text, text=True, check=False)
+
+
+# ---------- 조회 ----------
+
+def find_account(index: dict, query: str) -> dict:
+    q = query.lower()
+    accs = index["accounts"]
+    exact = [a for a in accs if a["id"] == q]
+    if exact:
+        return exact[0]
+    hits = [a for a in accs if q in a["id"] or q in a["issuer"].lower() or q in a["name"].lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise SystemExit(f"'{query}'에 해당하는 계정이 없습니다. `otp list`로 확인하십시오.")
+    by_issuer = [a for a in hits if a["issuer"].lower() == q]
+    if len(by_issuer) == 1:
+        return by_issuer[0]
+    names = ", ".join(a["id"] for a in hits)
+    raise SystemExit(f"'{query}'가 여러 계정과 일치합니다: {names}. id를 지정하십시오.")
+
+
+def fmt_code(code: str) -> str:
+    return f"{code[:3]} {code[3:]}" if len(code) == 6 else code
+
+
+# ---------- 명령 ----------
+
+def cmd_list(args) -> int:
+    index = load_index()
+    if not index["accounts"]:
+        print("등록된 계정이 없습니다. `otp import <QR이미지>` 또는 `otp add`로 추가하십시오.")
+        return 0
+    rows = []
+    for a in index["accounts"]:
+        try:
+            code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+        except SystemExit as e:
+            code = f"오류: {e}"
+        rows.append((a["id"], a["issuer"], a["name"], code, f"{remaining(a['period'])}s"))
+    if args.json:
+        print(json.dumps([{"id": r[0], "issuer": r[1], "name": r[2], "code": r[3], "remaining": r[4]} for r in rows],
+                         ensure_ascii=False, indent=2))
+        return 0
+    w = [max(len(str(r[i])) for r in rows + [("ID", "발급자", "이름", "코드", "남음")]) for i in range(5)]
+    hdr = ("ID", "발급자", "이름", "코드", "남음")
+    print("  ".join(h.ljust(w[i]) for i, h in enumerate(hdr)))
+    for r in rows:
+        print("  ".join(str(c).ljust(w[i]) for i, c in enumerate(r)))
+    return 0
+
+
+def cmd_get(args) -> int:
+    index = load_index()
+    a = find_account(index, args.account)
+    code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+    rem = remaining(a["period"])
+    if rem < 5 and not args.no_wait:
+        time.sleep(rem + 0.2)  # 만료 직전이면 다음 코드를 기다린다 (입력 중 만료 방지)
+        code = totp(keychain_get(a["id"]), a["digits"], a["period"], a["algorithm"])
+        rem = remaining(a["period"])
+    if args.copy:
+        copy_clipboard(code)
+    if not args.no_notify:
+        purpose = f" · {args.purpose}" if args.purpose else ""
+        who = "Claude" if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE") else "otp"
+        notify("OTP 코드 사용", f"{a['issuer']} · {a['name']}{purpose}",
+               f"{fmt_code(code)}   ({rem}초 남음, 요청: {who}{', 복사됨' if args.copy else ''})")
+    if args.json:
+        print(json.dumps({"id": a["id"], "issuer": a["issuer"], "name": a["name"], "code": code, "remaining": rem},
+                         ensure_ascii=False))
+    else:
+        print(code)
+        print(f"{a['issuer']} · {a['name']} · {rem}초 남음", file=sys.stderr)
+    return 0
+
+
+def cmd_import(args) -> int:
+    src = args.source
+    uris = [src] if src.startswith(("otpauth://", "otpauth-migration://")) else decode_qr_image(os.path.expanduser(src))
+    index = load_index()
+    found = []
+    for u in uris:
+        if u.startswith("otpauth-migration://"):
+            found += parse_migration(u)
+        elif u.startswith("otpauth://"):
+            found.append(parse_otpauth(u))
+        else:
+            print(f"무시(OTP URI 아님): {u[:60]}", file=sys.stderr)
+    if not found:
+        raise SystemExit("가져올 계정이 없습니다. QR이 Google OTP 내보내기 또는 otpauth 형식인지 확인하십시오.")
+    if args.dry_run:
+        for acc in found:
+            print(f"{acc['issuer']} · {acc['name']}  {acc['algorithm']}/{acc['digits']}자리/{acc.get('period', 30)}초  {acc['type']}")
+        print(f"{len(found)}개 발견 (--dry-run: 저장하지 않음)")
+        return 0
+    for acc in found:
+        print(add_account(index, acc, replace=args.replace))
+    save_index(index)
+    print(f"완료: 계정 {len(index['accounts'])}개 등록 상태. 메뉴바 앱은 다음에 메뉴를 열 때 반영됩니다.")
+    return 0
+
+
+def cmd_add(args) -> int:
+    index = load_index()
+    if args.uri:
+        acc = parse_otpauth(args.uri)
+    else:
+        if not (args.issuer and args.name and args.secret):
+            raise SystemExit("--issuer, --name, --secret 을 모두 주거나 --uri 를 사용하십시오.")
+        acc = {"secret": args.secret, "issuer": args.issuer, "name": args.name,
+               "algorithm": args.algorithm.upper(), "digits": args.digits, "period": args.period, "type": "totp"}
+    totp(acc["secret"], acc["digits"], acc["period"], acc["algorithm"])  # 비밀키 형식 검증
+    print(add_account(index, acc, replace=args.replace))
+    save_index(index)
+    return 0
+
+
+def cmd_remove(args) -> int:
+    index = load_index()
+    a = find_account(index, args.account)
+    keychain_delete(a["id"])
+    index["accounts"] = [x for x in index["accounts"] if x["id"] != a["id"]]
+    save_index(index)
+    print(f"삭제: {a['issuer']} · {a['name']} (id={a['id']})")
+    return 0
+
+
+def cmd_selftest(args) -> int:
+    b32 = lambda s: base64.b32encode(s.encode()).decode()
+    vectors = [  # RFC 6238 부록 B
+        (b32("12345678901234567890"), "SHA1", 59, "94287082"),
+        (b32("12345678901234567890"), "SHA1", 1111111109, "07081804"),
+        (b32("12345678901234567890"), "SHA1", 1234567890, "89005924"),
+        (b32("12345678901234567890123456789012"), "SHA256", 59, "46119246"),
+        (b32("1234567890" * 6 + "1234"), "SHA512", 59, "90693936"),
+    ]
+    ok = True
+    for secret, algo, t, expect in vectors:
+        got = totp(secret, 8, 30, algo, at=t)
+        ok &= got == expect
+        print(f"{'OK ' if got == expect else 'FAIL'} {algo} t={t} expect={expect} got={got}")
+    # Google 내보내기(protobuf) 왕복 검증: 직접 인코딩한 페이로드를 디코드한다
+    def enc_varint(n):
+        out = bytearray()
+        while True:
+            b, n = n & 0x7F, n >> 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+    def enc_field(fn, wt, v):
+        return enc_varint((fn << 3) | wt) + (enc_varint(len(v)) + v if wt == 2 else enc_varint(v))
+    secret_raw = base64.b32decode("JBSWY3DPEHPK3PXP")
+    param = (enc_field(1, 2, secret_raw) + enc_field(2, 2, b"Jira:bamin") + enc_field(3, 2, b"Jira")
+             + enc_field(4, 0, 1) + enc_field(5, 0, 1) + enc_field(6, 0, 2))
+    payload = enc_field(1, 2, param) + enc_field(2, 0, 1) + enc_field(3, 0, 1) + enc_field(4, 0, 0)
+    uri = "otpauth-migration://offline?data=" + urllib.parse.quote(base64.b64encode(payload).decode())
+    accs = parse_migration(uri)
+    mig_ok = (len(accs) == 1 and accs[0]["secret"] == "JBSWY3DPEHPK3PXP" and accs[0]["issuer"] == "Jira"
+              and accs[0]["name"] == "bamin" and accs[0]["digits"] == 6 and accs[0]["algorithm"] == "SHA1")
+    ok &= mig_ok
+    print(f"{'OK ' if mig_ok else 'FAIL'} migration protobuf decode → {accs[0] if accs else None}")
+    plain = parse_otpauth("otpauth://totp/Jira:user%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Jira&digits=6&period=30")
+    plain_ok = plain["issuer"] == "Jira" and plain["name"] == "user@example.com" and plain["secret"] == "JBSWY3DPEHPK3PXP"
+    ok &= plain_ok
+    print(f"{'OK ' if plain_ok else 'FAIL'} otpauth URI parse → {plain}")
+    print("selftest:", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def cmd_secrets(args) -> int:
+    """메뉴바 앱 전용: 계정 메타와 비밀키를 JSON으로 출력한다.
+
+    앱이 Keychain을 직접 읽으면 macOS가 파티션 검사로 키체인 암호를 요구하므로,
+    `security`(apple-tool 파티션)로 읽을 수 있는 CLI가 대신 읽어 앱에 넘긴다.
+    """
+    if not args.json:
+        raise SystemExit("비밀키 출력은 --json 을 명시해야 합니다 (메뉴바 앱 내부용).")
+    index = load_index()
+    out = []
+    for a in index["accounts"]:
+        out.append({k: a[k] for k in ("id", "issuer", "name", "algorithm", "digits", "period")})
+        out[-1]["secret"] = keychain_get(a["id"])
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def cmd_trust_app(args) -> int:
+    """앱을 다시 빌드하면 서명이 바뀌어 Keychain 접근 허용이 풀린다. 모든 항목의 허용 목록을 다시 쓴다."""
+    index = load_index()
+    if not os.path.exists(APP_BIN):
+        raise SystemExit(f"앱이 설치되어 있지 않습니다: {APP_BIN}")
+    for a in index["accounts"]:
+        keychain_set(a["id"], keychain_get(a["id"]), f"{a['issuer']} {a['name']}")
+    print(f"Keychain 접근 허용 갱신: 계정 {len(index['accounts'])}개 → {APP_BIN}")
+    return 0
+
+
+def cmd_paths(args) -> int:
+    print(f"index   : {INDEX_PATH}")
+    print(f"keychain: service={SERVICE} (security find-generic-password -s {SERVICE} -a <id> -w)")
+    print(f"otpqr   : {shutil.which('otpqr') or '(없음)'}")
+    print(f"app     : {APP_BIN if os.path.exists(APP_BIN) else '(설치 안 됨)'}")
+    return 0
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="otp", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version", version=f"otpbar {__version__}")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    s = sp.add_parser("list", help="등록 계정과 현재 코드")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_list)
+
+    s = sp.add_parser("get", help="계정 하나의 현재 코드 출력 (기본: 알림 표시)")
+    s.add_argument("account", help="id 또는 발급자/이름 일부")
+    s.add_argument("--copy", action="store_true", help="클립보드에 복사")
+    s.add_argument("--purpose", default="", help="알림에 표시할 사용 목적 (예: 웹메일 로그인)")
+    s.add_argument("--no-notify", action="store_true", help="알림을 띄우지 않음")
+    s.add_argument("--no-wait", action="store_true", help="만료 5초 전이라도 기다리지 않음")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_get)
+
+    s = sp.add_parser("import", help="QR 이미지 또는 URI에서 계정 가져오기")
+    s.add_argument("source", help="이미지 경로 또는 otpauth(-migration):// URI")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--replace", action="store_true", help="같은 발급자·이름이 있으면 덮어씀")
+    s.set_defaults(fn=cmd_import)
+
+    s = sp.add_parser("add", help="계정 수동 추가")
+    s.add_argument("--uri")
+    s.add_argument("--issuer")
+    s.add_argument("--name")
+    s.add_argument("--secret")
+    s.add_argument("--digits", type=int, default=6)
+    s.add_argument("--period", type=int, default=30)
+    s.add_argument("--algorithm", default="SHA1")
+    s.add_argument("--replace", action="store_true")
+    s.set_defaults(fn=cmd_add)
+
+    s = sp.add_parser("remove", help="계정 삭제 (Keychain 비밀키 포함)")
+    s.add_argument("account")
+    s.set_defaults(fn=cmd_remove)
+
+    s = sp.add_parser("selftest", help="RFC 6238 벡터·가져오기 파서 자체 검증")
+    s.set_defaults(fn=cmd_selftest)
+
+    s = sp.add_parser("secrets", help="(메뉴바 앱 내부용) 계정 메타와 비밀키 JSON 출력")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_secrets)
+
+    s = sp.add_parser("trust-app", help="OTPBar.app에 Keychain 접근 허용 부여 (보통 불필요)")
+    s.set_defaults(fn=cmd_trust_app)
+
+    s = sp.add_parser("paths", help="저장 위치 표시")
+    s.set_defaults(fn=cmd_paths)
+
+    args = p.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
