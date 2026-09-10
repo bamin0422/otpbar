@@ -15,7 +15,18 @@ Google OTP(Google Authenticator)에 등록한 계정의 일회용 코드를 Mac�
 
 ## 설치
 
+Homebrew:
+
 ```bash
+brew install bamin0422/tap/otpbar
+otpbar                      # 메뉴바 앱 실행
+brew services start otpbar  # 로그인 시 자동 실행 (선택)
+```
+
+소스에서 직접:
+
+```bash
+git clone https://github.com/bamin0422/otpbar ~/Projects/otpbar
 cd ~/Projects/otpbar
 ./build.sh            # 또는 ./build.sh --login (로그인 시 자동 실행)
 open ~/Applications/OTPBar.app
