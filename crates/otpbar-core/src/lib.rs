@@ -7,6 +7,7 @@
 //! - [`ipc`] 앱과 CLI 사이 프로토콜(비밀키를 전달하지 않는다)
 //! - [`settings`] 사용자 설정
 
+pub mod autounlock;
 pub mod crypto;
 pub mod error;
 pub mod ipc;

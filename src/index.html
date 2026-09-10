@@ -12,8 +12,8 @@
   <section id="view-setup" class="view" hidden>
     <div class="hero">
       <div class="logo" aria-hidden="true"></div>
-      <h1>OTPBar 시작하기</h1>
-      <p class="sub">마스터 암호로 금고를 만듭니다. 비밀키는 이 암호로 암호화되어 저장되며, 암호는 어디에도 보관하지 않습니다.</p>
+      <h1>금고를 만들지 못했습니다</h1>
+      <p class="sub">보통은 암호 없이 자동으로 준비됩니다. 자동 준비가 실패했을 때만 이 화면이 보입니다. 마스터 암호를 직접 정해 만드십시오.</p>
     </div>
     <form id="form-setup" autocomplete="off">
       <label for="setup-pw">마스터 암호 (8자 이상)</label>
@@ -107,20 +107,31 @@
       <label class="switch"><input type="checkbox" id="s-mask"> <span>코드를 가려서 표시</span></label>
       <label class="switch"><input type="checkbox" id="s-notify-code"> <span>알림에 코드 표시 <em>(잠금 화면에 보일 수 있습니다)</em></span></label>
       <label class="switch"><input type="checkbox" id="s-autostart"> <span>로그인할 때 자동 실행</span></label>
-      <label for="s-autolock">자동 잠금 (분, 0이면 잠그지 않음)</label>
+      <label for="s-autolock">자동 잠금 (분, 0이면 잠그지 않음 · 암호 보호를 켰을 때만 의미가 있습니다)</label>
       <input id="s-autolock" type="number" min="0" max="240" step="1">
       <label for="s-clip">복사한 코드 자동 삭제 (초, 0이면 삭제 안 함)</label>
       <input id="s-clip" type="number" min="0" max="600" step="5">
       <button id="btn-save-settings" class="primary">저장</button>
 
       <hr>
-      <h2>마스터 암호 변경</h2>
-      <form id="form-chpw" autocomplete="off">
+      <h2>잠금</h2>
+      <p class="hint" id="lock-state"></p>
+      <form id="form-enable-pw" autocomplete="off" hidden>
+        <label for="ep-new">마스터 암호로 잠그기 (8자 이상)</label>
+        <input id="ep-new" type="password" minlength="8" autocomplete="new-password" placeholder="켜면 앱을 열 때마다 묻습니다">
+        <button type="submit">암호 보호 켜기</button>
+      </form>
+      <form id="form-disable-pw" autocomplete="off" hidden>
+        <label for="dp-current">현재 마스터 암호</label>
+        <input id="dp-current" type="password" autocomplete="current-password">
+        <button type="submit">암호 보호 끄기</button>
+      </form>
+      <form id="form-chpw" autocomplete="off" hidden>
         <label for="cp-current">현재 암호</label>
         <input id="cp-current" type="password" autocomplete="current-password">
         <label for="cp-new">새 암호 (8자 이상)</label>
         <input id="cp-new" type="password" minlength="8" autocomplete="new-password">
-        <button type="submit">변경</button>
+        <button type="submit">암호 변경</button>
       </form>
 
       <hr>

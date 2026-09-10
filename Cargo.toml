@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/otpbar-core", "crates/otpbar-cli", "src-tauri"]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT"
@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive"] }
 directories = "5"
 hmac = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tiff"] }
-interprocess = { version = "2", features = ["tokio"] }
+keyring = "4"
 percent-encoding = "2"
 rand = "0.8"
 rqrr = "0.11"

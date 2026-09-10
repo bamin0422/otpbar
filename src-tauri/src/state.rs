@@ -65,6 +65,43 @@ impl AppState {
         self.lock_inner().vault.is_unlocked()
     }
 
+    /// 앱 시작 시 호출한다. 금고가 없으면 자동 해제용으로 만들고, 있으면 조용히 연다.
+    /// 마스터 암호 보호를 켠 사용자만 잠긴 상태로 남는다.
+    pub fn ensure_ready(&self) -> Result<bool> {
+        let mut inner = self.lock_inner();
+        if inner.vault.is_unlocked() {
+            return Ok(true);
+        }
+        if !inner.vault.exists() {
+            inner.vault.create_auto()?;
+            inner.last_activity = Instant::now();
+            return Ok(true);
+        }
+        let opened = inner.vault.unlock_auto()?;
+        if opened {
+            inner.last_activity = Instant::now();
+        }
+        Ok(opened)
+    }
+
+    pub fn auto_unlock_enabled(&self) -> bool {
+        self.lock_inner().vault.auto_unlock_enabled()
+    }
+
+    pub fn enable_password_protection(&self, new_password: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.vault.enable_password_protection(new_password)?;
+        inner.last_activity = Instant::now();
+        Ok(())
+    }
+
+    pub fn disable_password_protection(&self, current: &str) -> Result<()> {
+        let mut inner = self.lock_inner();
+        inner.vault.disable_password_protection(current)?;
+        inner.last_activity = Instant::now();
+        Ok(())
+    }
+
     pub fn create_vault(&self, password: &str) -> Result<()> {
         let mut inner = self.lock_inner();
         inner.vault.create(password)?;

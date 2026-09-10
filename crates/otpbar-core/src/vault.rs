@@ -190,6 +190,50 @@ impl Vault {
         self.data.is_some()
     }
 
+    /// 마스터 암호 없이 쓰는 금고를 만든다.
+    ///
+    /// 무작위 키를 만들어 운영체제 자격증명 저장소에 넣고 그것으로 금고를 봉인한다.
+    /// 사용자는 암호를 입력하지 않고, 앱은 시작할 때 조용히 연다. 파일 자체는 여전히
+    /// 암호문이므로 금고만 복사해 가서는 열 수 없다.
+    pub fn create_auto(&mut self) -> Result<()> {
+        let passphrase = crate::crypto::random_token();
+        self.create(&passphrase)?;
+        crate::autounlock::store(&passphrase)?;
+        Ok(())
+    }
+
+    /// 자격증명 저장소에 키가 있으면 조용히 연다. 없으면 `Ok(false)`.
+    pub fn unlock_auto(&mut self) -> Result<bool> {
+        let Some(passphrase) = crate::autounlock::load()? else {
+            return Ok(false);
+        };
+        self.unlock(&passphrase)?;
+        Ok(true)
+    }
+
+    /// 자동 해제를 끄고 사용자 마스터 암호로 보호한다.
+    pub fn enable_password_protection(&mut self, new_password: &str) -> Result<()> {
+        let Some(current) = crate::autounlock::load()? else {
+            return Err(Error::other("이미 마스터 암호로 보호되고 있습니다"));
+        };
+        self.change_password(&current, new_password)?;
+        crate::autounlock::clear()?;
+        Ok(())
+    }
+
+    /// 마스터 암호 보호를 풀고 자동 해제로 되돌린다.
+    pub fn disable_password_protection(&mut self, current_password: &str) -> Result<()> {
+        let passphrase = crate::crypto::random_token();
+        self.change_password(current_password, &passphrase)?;
+        crate::autounlock::store(&passphrase)?;
+        Ok(())
+    }
+
+    /// 자동 해제가 켜져 있는지.
+    pub fn auto_unlock_enabled(&self) -> bool {
+        crate::autounlock::is_enabled()
+    }
+
     /// 새 금고를 만든다. 이미 있으면 거부한다.
     pub fn create(&mut self, password: &str) -> Result<()> {
         if self.sealed.is_some() {

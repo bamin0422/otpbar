@@ -29,6 +29,7 @@ async function refreshStatus() {
   state = await invoke("vault_status").then((s) => ({
     unlocked: s.unlocked,
     hasVault: s.has_vault,
+    autoUnlock: s.auto_unlock,
     settings: s.settings,
     version: s.version,
     accountCount: s.account_count,
@@ -264,6 +265,14 @@ function showImportLog(lines) {
 
 async function fillSettings() {
   const s = state.settings || (await invoke("get_settings"));
+  // 잠금 방식에 따라 보여 줄 폼을 고른다
+  const auto = state.autoUnlock;
+  $("lock-state").textContent = auto
+    ? "지금은 암호 없이 바로 열립니다. 금고 파일은 암호화되어 있고, 여는 키는 이 기기의 자격증명 저장소에 있습니다."
+    : "마스터 암호로 보호 중입니다. 앱을 열 때마다 암호를 묻습니다.";
+  $("form-enable-pw").hidden = !auto;
+  $("form-disable-pw").hidden = auto;
+  $("form-chpw").hidden = auto;
   $("s-mask").checked = !!s.mask_codes;
   $("s-notify-code").checked = !!s.show_code_in_notification;
   $("s-autolock").value = Math.round((s.auto_lock_secs || 0) / 60);
@@ -295,6 +304,36 @@ $("btn-save-settings").addEventListener("click", async () => {
     } catch { /* 자동 시작을 못 바꿔도 설정 저장은 유지 */ }
     $("settings-ok").textContent = "저장했습니다.";
     renderList();
+  } catch (err) {
+    setError("settings-error", String(err));
+  }
+});
+
+$("form-enable-pw").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  setError("settings-error", "");
+  $("settings-ok").textContent = "";
+  try {
+    await invoke("enable_password_protection", { password: $("ep-new").value });
+    $("ep-new").value = "";
+    await refreshStatus();
+    await fillSettings();
+    $("settings-ok").textContent = "이제 앱을 열 때 마스터 암호를 묻습니다.";
+  } catch (err) {
+    setError("settings-error", String(err));
+  }
+});
+
+$("form-disable-pw").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  setError("settings-error", "");
+  $("settings-ok").textContent = "";
+  try {
+    await invoke("disable_password_protection", { current: $("dp-current").value });
+    $("dp-current").value = "";
+    await refreshStatus();
+    await fillSettings();
+    $("settings-ok").textContent = "암호 보호를 껐습니다. 이제 바로 열립니다.";
   } catch (err) {
     setError("settings-error", String(err));
   }

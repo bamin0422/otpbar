@@ -73,6 +73,7 @@ fn dispatch(app: &AppHandle, state: &AppState, request: Request) -> Result<Respo
         }),
 
         Request::List { with_codes } => {
+            state.ensure_ready().ok();
             state.require_unlocked()?;
             state.touch();
             Ok(Response::List {

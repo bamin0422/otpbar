@@ -48,6 +48,8 @@ pub fn run() {
             commands::unlock,
             commands::lock,
             commands::change_password,
+            commands::enable_password_protection,
+            commands::disable_password_protection,
             commands::list_accounts,
             commands::get_code,
             commands::import_source,
@@ -108,10 +110,24 @@ pub fn run() {
                 }
             });
 
-            // 금고가 없으면 첫 실행이므로 창을 띄워 마스터 암호를 정하게 한다
+            // 금고를 준비한다. 기본 구성에서는 암호 없이 바로 열린다.
             let state = handle.state::<AppState>();
-            if !state.has_vault() {
-                ui::show_window(&handle);
+            match state.ensure_ready() {
+                Ok(true) => {
+                    tray::rebuild(&handle);
+                    // 계정이 하나도 없으면 무엇을 해야 하는지 보이도록 창을 띄운다
+                    if state.account_count() == 0 {
+                        ui::show_window(&handle);
+                    }
+                }
+                Ok(false) => {
+                    // 마스터 암호 보호를 켠 사용자: 잠금 해제 화면을 띄운다
+                    ui::show_window(&handle);
+                }
+                Err(e) => {
+                    eprintln!("[otpbar] 금고를 준비하지 못했습니다: {e}");
+                    ui::show_window(&handle);
+                }
             }
             Ok(())
         })

@@ -8,6 +8,8 @@ use crate::util;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// 마지막 조작 후 이 시간(초)이 지나면 자동으로 잠근다. 0이면 잠그지 않는다.
+    /// 기본은 0이다. 자동 해제를 쓰는 기본 구성에서는 잠가도 곧바로 다시 열리므로
+    /// 의미가 없고, 마스터 암호 보호를 켠 사용자만 이 값을 올린다.
     pub auto_lock_secs: u64,
     /// 코드를 가린 채 표시하고, 누를 때만 보여 준다.
     pub mask_codes: bool,
@@ -22,7 +24,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            auto_lock_secs: 300,
+            auto_lock_secs: 0,
             mask_codes: true,
             show_code_in_notification: false,
             clipboard_clear_secs: 20,
@@ -53,8 +55,11 @@ mod tests {
     fn defaults_are_conservative() {
         let s = Settings::default();
         assert!(s.mask_codes, "코드는 기본으로 가린다");
+        assert_eq!(
+            s.auto_lock_secs, 0,
+            "기본 구성에서는 자동 잠금을 걸지 않는다"
+        );
         assert!(!s.show_code_in_notification, "알림에 코드를 넣지 않는다");
-        assert!(s.auto_lock_secs > 0, "자동 잠금이 켜져 있다");
         assert!(s.clipboard_clear_secs > 0, "클립보드를 비운다");
     }
 }

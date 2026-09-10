@@ -21,6 +21,7 @@ fn err(e: impl std::fmt::Display) -> String {
 pub struct StatusView {
     pub has_vault: bool,
     pub unlocked: bool,
+    pub auto_unlock: bool,
     pub version: String,
     pub account_count: usize,
     pub settings: Settings,
@@ -31,6 +32,7 @@ pub fn vault_status(state: State<'_, AppState>) -> StatusView {
     StatusView {
         has_vault: state.has_vault(),
         unlocked: state.is_unlocked(),
+        auto_unlock: state.auto_unlock_enabled(),
         version: otpbar_core::VERSION.to_string(),
         account_count: state.account_count(),
         settings: state.settings(),
@@ -54,6 +56,30 @@ pub fn unlock(app: AppHandle, state: State<'_, AppState>, password: String) -> C
 #[tauri::command]
 pub fn lock(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     state.lock();
+    ui::refresh(&app);
+    Ok(())
+}
+
+/// 마스터 암호 보호를 켠다(자동 해제 항목을 지우고 암호로 다시 봉인).
+#[tauri::command]
+pub fn enable_password_protection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    password: String,
+) -> CmdResult<()> {
+    state.enable_password_protection(&password).map_err(err)?;
+    ui::refresh(&app);
+    Ok(())
+}
+
+/// 마스터 암호 보호를 끄고 자동 해제로 되돌린다.
+#[tauri::command]
+pub fn disable_password_protection(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    current: String,
+) -> CmdResult<()> {
+    state.disable_password_protection(&current).map_err(err)?;
     ui::refresh(&app);
     Ok(())
 }

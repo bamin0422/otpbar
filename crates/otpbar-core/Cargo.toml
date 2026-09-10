@@ -17,6 +17,7 @@ chacha20poly1305.workspace = true
 directories.workspace = true
 hmac.workspace = true
 image.workspace = true
+keyring.workspace = true
 percent-encoding.workspace = true
 rand.workspace = true
 rqrr.workspace = true
