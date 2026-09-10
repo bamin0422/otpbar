@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTPBar</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- 첫 실행: 금고 만들기 -->
+  <section id="view-setup" class="view" hidden>
+    <div class="hero">
+      <div class="logo" aria-hidden="true"></div>
+      <h1>OTPBar 시작하기</h1>
+      <p class="sub">마스터 암호로 금고를 만듭니다. 비밀키는 이 암호로 암호화되어 저장되며, 암호는 어디에도 보관하지 않습니다.</p>
+    </div>
+    <form id="form-setup" autocomplete="off">
+      <label for="setup-pw">마스터 암호 (8자 이상)</label>
+      <input id="setup-pw" type="password" required minlength="8" autocomplete="new-password" placeholder="기억할 수 있는 긴 문장을 권합니다">
+      <label for="setup-pw2">한 번 더</label>
+      <input id="setup-pw2" type="password" required minlength="8" autocomplete="new-password">
+      <p class="warn">암호를 잊으면 금고를 열 수 없습니다. 복구 수단은 없습니다.</p>
+      <button type="submit" class="primary">금고 만들기</button>
+      <p class="error" id="setup-error" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- 잠김: 암호 입력 -->
+  <section id="view-locked" class="view" hidden>
+    <div class="hero">
+      <div class="logo locked" aria-hidden="true"></div>
+      <h1>잠겨 있습니다</h1>
+      <p class="sub">마스터 암호를 입력하면 코드를 볼 수 있습니다.</p>
+    </div>
+    <form id="form-unlock" autocomplete="off">
+      <label for="unlock-pw">마스터 암호</label>
+      <input id="unlock-pw" type="password" required autocomplete="current-password" autofocus>
+      <button type="submit" class="primary">잠금 해제</button>
+      <p class="error" id="unlock-error" role="alert"></p>
+    </form>
+  </section>
+
+  <!-- 해제: 계정 목록 -->
+  <section id="view-list" class="view" hidden>
+    <header class="bar">
+      <h1>OTPBar</h1>
+      <div class="actions">
+        <button id="btn-reveal" class="icon" title="코드 보이기/가리기" aria-pressed="false">보기</button>
+        <button id="btn-add" class="icon" title="계정 추가">추가</button>
+        <button id="btn-settings" class="icon" title="설정">설정</button>
+        <button id="btn-lock" class="icon" title="지금 잠그기">잠금</button>
+      </div>
+    </header>
+    <div id="list" class="list" role="list"></div>
+    <p id="list-empty" class="empty" hidden>
+      등록된 계정이 없습니다.<br>
+      <button id="btn-empty-add" class="link">QR 이미지에서 가져오기</button>
+    </p>
+    <footer class="foot">
+      <span id="foot-status"></span>
+      <button id="btn-update" class="link">업데이트 확인</button>
+    </footer>
+  </section>
+
+  <!-- 계정 추가 -->
+  <section id="view-add" class="view" hidden>
+    <header class="bar">
+      <button class="back" data-back>뒤로</button>
+      <h1>계정 추가</h1>
+    </header>
+    <div class="pad">
+      <button id="btn-pick-qr" class="primary">QR 이미지 선택…</button>
+      <p class="hint">구글 OTP의 <b>계정 이전 → 계정 내보내기</b> QR 또는 서비스가 준 일반 QR을 읽습니다.</p>
+      <details>
+        <summary>URI 붙여넣기 / 설정 키 직접 입력</summary>
+        <form id="form-uri" autocomplete="off">
+          <label for="uri">otpauth:// 또는 otpauth-migration:// URI</label>
+          <input id="uri" type="text" placeholder="otpauth://totp/...">
+          <button type="submit">가져오기</button>
+        </form>
+        <form id="form-manual" autocomplete="off">
+          <label for="m-issuer">서비스 이름</label>
+          <input id="m-issuer" type="text" placeholder="authentik">
+          <label for="m-name">계정</label>
+          <input id="m-name" type="text" placeholder="bamin0422">
+          <label for="m-secret">설정 키 (base32)</label>
+          <input id="m-secret" type="password" placeholder="서비스가 보여 준 설정 키를 붙여넣으십시오" autocomplete="off">
+          <div class="row">
+            <span><label for="m-digits">자릿수</label><input id="m-digits" type="number" value="6" min="4" max="10"></span>
+            <span><label for="m-period">주기(초)</label><input id="m-period" type="number" value="30" min="1" max="600"></span>
+            <span><label for="m-algo">알고리즘</label>
+              <select id="m-algo"><option>SHA1</option><option>SHA256</option><option>SHA512</option></select>
+            </span>
+          </div>
+          <button type="submit">추가</button>
+        </form>
+      </details>
+      <p class="error" id="add-error" role="alert"></p>
+      <pre id="add-log" class="log" hidden></pre>
+    </div>
+  </section>
+
+  <!-- 설정 -->
+  <section id="view-settings" class="view" hidden>
+    <header class="bar">
+      <button class="back" data-back>뒤로</button>
+      <h1>설정</h1>
+    </header>
+    <div class="pad">
+      <label class="switch"><input type="checkbox" id="s-mask"> <span>코드를 가려서 표시</span></label>
+      <label class="switch"><input type="checkbox" id="s-notify-code"> <span>알림에 코드 표시 <em>(잠금 화면에 보일 수 있습니다)</em></span></label>
+      <label class="switch"><input type="checkbox" id="s-autostart"> <span>로그인할 때 자동 실행</span></label>
+      <label for="s-autolock">자동 잠금 (분, 0이면 잠그지 않음)</label>
+      <input id="s-autolock" type="number" min="0" max="240" step="1">
+      <label for="s-clip">복사한 코드 자동 삭제 (초, 0이면 삭제 안 함)</label>
+      <input id="s-clip" type="number" min="0" max="600" step="5">
+      <button id="btn-save-settings" class="primary">저장</button>
+
+      <hr>
+      <h2>마스터 암호 변경</h2>
+      <form id="form-chpw" autocomplete="off">
+        <label for="cp-current">현재 암호</label>
+        <input id="cp-current" type="password" autocomplete="current-password">
+        <label for="cp-new">새 암호 (8자 이상)</label>
+        <input id="cp-new" type="password" minlength="8" autocomplete="new-password">
+        <button type="submit">변경</button>
+      </form>
+
+      <hr>
+      <h2>정보</h2>
+      <p class="hint" id="about-text"></p>
+      <p class="hint">금고 위치: <code id="about-dir"></code></p>
+      <p class="error" id="settings-error" role="alert"></p>
+      <p class="ok" id="settings-ok" role="status"></p>
+    </div>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

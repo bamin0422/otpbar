@@ -161,11 +161,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         rebuildMenu()
+        // `OTPBar --open-menu` (다른 프로세스)에서 보내는 신호를 받아 메뉴를 연다. 화면 캡처·시연용.
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name(openMenuNote), object: nil, queue: .main) { [weak self] _ in
+            self?.openMenuForCapture()
+        }
         // 업데이트 자동 확인: 실행 5초 후 1회, 이후 24시간마다
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.backgroundUpdateCheck(manual: false) }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 86_400, repeats: true) { [weak self] _ in
             DispatchQueue.global().async { self?.backgroundUpdateCheck(manual: false) }
         }
+    }
+
+    /// 상태 항목의 화면 좌표를 파일에 적고 메뉴를 연다 (screencapture 영역 계산용).
+    func openMenuForCapture() {
+        if let win = statusItem.button?.window, let screen = win.screen ?? NSScreen.main {
+            let f = win.frame
+            let info: [String: Any] = ["x": f.origin.x, "y": f.origin.y, "w": f.width, "h": f.height,
+                                       "screenX": screen.frame.origin.x, "screenY": screen.frame.origin.y,
+                                       "screenW": screen.frame.width, "screenH": screen.frame.height,
+                                       "scale": screen.backingScaleFactor]
+            if let data = try? JSONSerialization.data(withJSONObject: info) {
+                try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+                try? data.write(to: configDir.appendingPathComponent("statusitem.json"))
+            }
+        }
+        guard let button = statusItem.button else { return }
+        // 다음 런루프에서 실제 클릭과 같은 경로로 연다 (알림 콜백 안에서 직접 열면 곧바로 닫히는 경우가 있음)
+        DispatchQueue.main.async { button.performClick(nil) }
     }
 
     func backgroundUpdateCheck(manual: Bool) {
@@ -295,6 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        try? "\(Date().timeIntervalSince1970)".write(to: configDir.appendingPathComponent("menu-opened.txt"), atomically: true, encoding: .utf8)
         rebuildMenu()
         timer?.invalidate()
         timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.refreshTitles() }
@@ -302,6 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        try? "\(Date().timeIntervalSince1970)".write(to: configDir.appendingPathComponent("menu-closed.txt"), atomically: true, encoding: .utf8)
         timer?.invalidate()
         timer = nil
         // 메뉴 항목 액션이 처리된 뒤 비밀키를 메모리에서 비운다 (메뉴가 다시 열리면 CLI에서 다시 읽는다)
@@ -353,6 +377,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         alert.runModal()
         rebuildMenu()
     }
+}
+
+let openMenuNote = "com.bamin0422.otpbar.openMenu"
+
+// `OTPBar --open-menu`: 실행 중인 OTPBar에 메뉴를 열라는 신호를 보내고 종료한다 (캡처·시연용).
+if CommandLine.arguments.contains("--open-menu") {
+    DistributedNotificationCenter.default().postNotificationName(Notification.Name(openMenuNote), object: nil, userInfo: nil, deliverImmediately: true)
+    exit(0)
 }
 
 // 검증용: `OTPBar --print` 는 메뉴를 띄우지 않고 모든 계정의 현재 코드를 출력한 뒤 종료한다.

@@ -1,0 +1,108 @@
+name: release
+
+# 태그를 올리면 macOS(Apple Silicon·Intel)와 Windows 빌드를 만들고,
+# 서명된 업데이트 매니페스트(latest.json)와 함께 릴리스에 올린다.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "릴리스로 만들 태그 (예: v2.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: 테스트 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 리눅스 의존성
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+      - name: core·cli 테스트
+        run: cargo test -p otpbar-core -p otpbar-cli --locked
+      - name: 서식·린트
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo fmt --all -- --check || echo "::warning::cargo fmt 차이가 있습니다"
+          cargo clippy -p otpbar-core -p otpbar-cli -- -D warnings
+
+  build:
+    name: 빌드 (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: CLI 빌드
+        run: cargo build --release -p otpbar-cli ${{ matrix.args }} --locked
+
+      - name: 앱 빌드·서명·릴리스 업로드
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "OTPBar __VERSION__"
+          releaseBody: |
+            설치 방법은 README를 참고하십시오.
+
+            - macOS: `brew install bamin0422/tap/otpbar`
+            - Windows: `irm https://raw.githubusercontent.com/bamin0422/otpbar/main/install.ps1 | iex`
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+      - name: CLI 압축 (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          Compress-Archive -Path target/release/otp.exe -DestinationPath otp-windows-x86_64.zip -Force
+        shell: pwsh
+
+      - name: CLI 압축 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          tar -czf otp-macos-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release otp
+
+      - name: CLI 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            otp-windows-x86_64.zip
+            otp-macos-${{ matrix.target }}.tar.gz
+          fail_on_unmatched_files: false

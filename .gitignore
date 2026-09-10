@@ -1,8 +1,14 @@
-# 빌드 산출물
-build/
-bin/
-*.o
-*.dSYM/
+# Rust
+/target/
+**/*.rs.bk
+
+# Tauri 자동 생성
+/src-tauri/gen/
+/src-tauri/target/
+
+# 1.x 빌드 산출물
+/bin/
+/build/
 __pycache__/
 
 # 시험용 QR 이미지·URI (비밀키가 들어 있음). 디자인 자산(assets/)은 커밋한다.
@@ -10,6 +16,10 @@ test-*.png
 test-*.jpg
 *_uri.txt
 assets/AppIcon.iconset/
+
+# 서명 키는 절대 커밋하지 않는다
+*.key
+*.key.pub
 
 # macOS
 .DS_Store
