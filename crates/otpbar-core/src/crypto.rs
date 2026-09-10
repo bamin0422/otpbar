@@ -182,16 +182,14 @@ pub fn random_token() -> String {
     token
 }
 
-/// 길이·내용을 상수 시간으로 비교한다(토큰 검증용).
+/// 토큰 비교. 내용은 상수 시간으로 견준다.
+///
+/// 토큰 길이는 고정(base64 44자)이므로 길이가 다르면 곧바로 실패시켜도 비밀이 드러나지
+/// 않는다. 길이가 같을 때만 바이트 비교가 이뤄지며, 이 비교는 조기 종료하지 않는다.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        // 길이가 다르면 내용 비교 없이 실패시키되, 분기 시간이 비밀을 드러내지 않도록
-        // 더미 비교를 수행한다.
-        return bool::from(a.ct_eq(a)) && false;
-    }
-    bool::from(a.ct_eq(b))
+    a.len() == b.len() && bool::from(a.ct_eq(b))
 }
 
 #[cfg(test)]
