@@ -27,7 +27,8 @@ pub fn show_window(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         // 창을 보여 줄 때만 Dock에 나타나게 한다(평소에는 메뉴바 전용).
-        app.set_activation_policy(tauri::ActivationPolicy::Regular).ok();
+        app.set_activation_policy(tauri::ActivationPolicy::Regular)
+            .ok();
     }
 }
 
@@ -37,7 +38,8 @@ pub fn hide_window(app: &AppHandle) {
     }
     #[cfg(target_os = "macos")]
     {
-        app.set_activation_policy(tauri::ActivationPolicy::Accessory).ok();
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory)
+            .ok();
     }
 }
 
@@ -63,7 +65,14 @@ pub fn copy_code(app: &AppHandle, code: &str, clear_after_secs: u64) {
 }
 
 /// 코드가 쓰였음을 알린다. 설정에 따라 코드 자체는 감춘다.
-pub fn notify_code_used(app: &AppHandle, detail: &str, code: &str, remaining: u64, copied: bool, settings: &Settings) {
+pub fn notify_code_used(
+    app: &AppHandle,
+    detail: &str,
+    code: &str,
+    remaining: u64,
+    copied: bool,
+    settings: &Settings,
+) {
     let shown = if settings.show_code_in_notification {
         format!("{}   ", pretty(code))
     } else {
@@ -80,7 +89,12 @@ pub fn notify_code_used(app: &AppHandle, detail: &str, code: &str, remaining: u6
 }
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) {
-    app.notification().builder().title(title).body(body).show().ok();
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .ok();
 }
 
 pub fn pretty(code: &str) -> String {

@@ -63,10 +63,19 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
         #[cfg(unix)]
         let mut file = {
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?
         };
         #[cfg(not(unix))]
-        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
 
         use std::io::Write;
         file.write_all(data)?;
@@ -82,7 +91,10 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 pub fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// 외부 crate 없이 만드는 RFC 3339(UTC) 시각 문자열.
@@ -111,7 +123,12 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// 계정 id로 쓰는 슬러그. 영숫자와 한글만 남기므로 경로·인자 주입에 쓰일 수 없다.
 pub fn slugify(parts: &[&str]) -> String {
-    let joined = parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join("-");
+    let joined = parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("-");
     let mut out = String::with_capacity(joined.len());
     let mut prev_dash = false;
     for ch in joined.chars() {
@@ -141,7 +158,10 @@ mod tests {
         assert_eq!(slugify(&["GitHub", "bamin0422"]), "github-bamin0422");
         assert_eq!(slugify(&["Jira", "me@company.com"]), "jira-me-company-com");
         assert_eq!(slugify(&["", ""]), "account");
-        assert_eq!(slugify(&["--replace; rm -rf /", "$(whoami)"]), "replace-rm-rf-whoami");
+        assert_eq!(
+            slugify(&["--replace; rm -rf /", "$(whoami)"]),
+            "replace-rm-rf-whoami"
+        );
         assert_eq!(slugify(&["기념일", "축하"]), "기념일-축하");
     }
 

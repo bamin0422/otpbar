@@ -34,7 +34,9 @@ impl AppState {
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
         // 잠금이 오염되어도 앱을 죽이지 않는다. 금고는 자물쇠가 아니라 데이터이므로
         // 복구해서 계속 쓰는 편이 사용자에게 낫다.
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn token(&self) -> String {
@@ -93,7 +95,11 @@ impl AppState {
     }
 
     pub fn account_count(&self) -> usize {
-        self.lock_inner().vault.accounts().map(|a| a.len()).unwrap_or(0)
+        self.lock_inner()
+            .vault
+            .accounts()
+            .map(|a| a.len())
+            .unwrap_or(0)
     }
 
     /// 목록과 코드를 함께 만든다(트레이·창 표시에 쓴다).
@@ -110,7 +116,11 @@ impl AppState {
             } else {
                 (None, None)
             };
-            out.push(ListItem { account, code, remaining });
+            out.push(ListItem {
+                account,
+                code,
+                remaining,
+            });
         }
         Ok(out)
     }
@@ -143,7 +153,12 @@ impl AppState {
         Ok(view)
     }
 
-    pub fn rename(&self, query: &str, issuer: Option<String>, name: Option<String>) -> Result<AccountView> {
+    pub fn rename(
+        &self,
+        query: &str,
+        issuer: Option<String>,
+        name: Option<String>,
+    ) -> Result<AccountView> {
         let mut inner = self.lock_inner();
         let view = inner.vault.rename(query, issuer, name)?;
         inner.last_activity = Instant::now();

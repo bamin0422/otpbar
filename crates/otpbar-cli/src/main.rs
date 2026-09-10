@@ -103,7 +103,12 @@ fn run(cli: &Cli) -> Result<(), Error> {
         Command::Status { json } => {
             let resp = send(Request::Status)?;
             match resp {
-                Response::Status { unlocked, version, account_count, has_vault } => {
+                Response::Status {
+                    unlocked,
+                    version,
+                    account_count,
+                    has_vault,
+                } => {
                     if *json {
                         println!(
                             "{}",
@@ -113,7 +118,9 @@ fn run(cli: &Cli) -> Result<(), Error> {
                             })
                         );
                     } else if !has_vault {
-                        println!("금고가 아직 없습니다. 앱에서 마스터 암호를 정해 금고를 만드십시오.");
+                        println!(
+                            "금고가 아직 없습니다. 앱에서 마스터 암호를 정해 금고를 만드십시오."
+                        );
                     } else if unlocked {
                         println!("잠금 해제됨 · 계정 {account_count}개 · 앱 {version}");
                     } else {
@@ -134,7 +141,13 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 other => unexpected(other),
             }
         }
-        Command::Get { query, copy, purpose, no_wait, json } => {
+        Command::Get {
+            query,
+            copy,
+            purpose,
+            no_wait,
+            json,
+        } => {
             let resp = send(Request::Code {
                 query: query.clone(),
                 purpose: purpose.clone(),
@@ -142,7 +155,12 @@ fn run(cli: &Cli) -> Result<(), Error> {
                 wait: !*no_wait,
             })?;
             match resp {
-                Response::Code { account, code, remaining, copied } => {
+                Response::Code {
+                    account,
+                    code,
+                    remaining,
+                    copied,
+                } => {
                     if *json {
                         println!(
                             "{}",
@@ -166,7 +184,10 @@ fn run(cli: &Cli) -> Result<(), Error> {
             }
         }
         Command::Import { source, replace } => {
-            let resp = send(Request::Import { source: source.clone(), replace: *replace })?;
+            let resp = send(Request::Import {
+                source: source.clone(),
+                replace: *replace,
+            })?;
             match resp {
                 Response::Imported { messages, added } => {
                     for m in messages {
@@ -216,7 +237,9 @@ fn unexpected(resp: Response) -> Result<(), Error> {
                 Err(Error::other(message))
             }
         }
-        other => Err(Error::other(format!("앱이 예상 밖의 응답을 보냈습니다: {other:?}"))),
+        other => Err(Error::other(format!(
+            "앱이 예상 밖의 응답을 보냈습니다: {other:?}"
+        ))),
     }
 }
 
@@ -225,7 +248,10 @@ fn send(request: Request) -> Result<Response, Error> {
     let info = RuntimeInfo::read()?;
     let mut conn = transport::connect(&info.endpoint)?;
     conn.set_timeout(Duration::from_secs(60))?;
-    let envelope = Envelope { token: info.token, request };
+    let envelope = Envelope {
+        token: info.token,
+        request,
+    };
     conn.write_line(&serde_json::to_string(&envelope)?)?;
     let line = conn
         .read_line()?
@@ -245,19 +271,34 @@ fn send(request: Request) -> Result<Response, Error> {
 
 fn print_list(items: &[ListItem], json: bool) {
     if json {
-        println!("{}", serde_json::to_string_pretty(items).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(items).unwrap_or_default()
+        );
         return;
     }
     if items.is_empty() {
         println!("등록된 계정이 없습니다. `otp import <QR 이미지>`로 추가하십시오.");
         return;
     }
-    let width = items.iter().map(|i| i.account.id.chars().count()).max().unwrap_or(4).max(2);
+    let width = items
+        .iter()
+        .map(|i| i.account.id.chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(2);
     for item in items {
         let label = format!("{} · {}", item.account.issuer, item.account.name);
         match (&item.code, item.remaining) {
             (Some(code), Some(rem)) => {
-                println!("{:width$}  {:<32}  {}  {}초", item.account.id, label, code, rem, width = width)
+                println!(
+                    "{:width$}  {:<32}  {}  {}초",
+                    item.account.id,
+                    label,
+                    code,
+                    rem,
+                    width = width
+                )
             }
             _ => println!("{:width$}  {}", item.account.id, label, width = width),
         }
@@ -278,7 +319,10 @@ fn run_offline(cli: &Cli) -> Result<(), Error> {
         Command::Status { json } => {
             let count = vault.accounts()?.len();
             if *json {
-                println!("{}", serde_json::json!({"unlocked": true, "accounts": count, "offline": true}));
+                println!(
+                    "{}",
+                    serde_json::json!({"unlocked": true, "accounts": count, "offline": true})
+                );
             } else {
                 println!("오프라인 · 계정 {count}개");
             }
@@ -296,7 +340,11 @@ fn run_offline(cli: &Cli) -> Result<(), Error> {
                     } else {
                         (None, None)
                     };
-                    ListItem { account: a, code, remaining }
+                    ListItem {
+                        account: a,
+                        code,
+                        remaining,
+                    }
                 })
                 .collect();
             print_list(&items, *json);

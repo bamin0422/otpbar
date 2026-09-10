@@ -29,7 +29,9 @@ pub fn decode_image(path: &std::path::Path) -> Result<Vec<String>> {
         }
     }
     if out.is_empty() {
-        return Err(Error::Qr("QR 코드를 찾지 못했습니다. 이미지가 선명한지 확인하십시오".into()));
+        return Err(Error::Qr(
+            "QR 코드를 찾지 못했습니다. 이미지가 선명한지 확인하십시오".into(),
+        ));
     }
     Ok(out)
 }
@@ -70,7 +72,9 @@ pub fn parse_otpauth(uri: &str) -> Result<NewAccount> {
     }
     let kind = parsed.host_str().unwrap_or("totp").to_ascii_lowercase();
     if kind != "totp" {
-        return Err(Error::Unsupported(format!("{kind}는 지원하지 않습니다 (TOTP만 가능)")));
+        return Err(Error::Unsupported(format!(
+            "{kind}는 지원하지 않습니다 (TOTP만 가능)"
+        )));
     }
     let label = percent_decode_str(parsed.path().trim_start_matches('/'))
         .decode_utf8_lossy()
@@ -94,10 +98,14 @@ pub fn parse_otpauth(uri: &str) -> Result<NewAccount> {
             }
             "algorithm" => algorithm = Algorithm::parse(&v)?,
             "digits" => {
-                digits = v.parse().map_err(|_| Error::Qr(format!("digits 값이 숫자가 아닙니다: {v}")))?
+                digits = v
+                    .parse()
+                    .map_err(|_| Error::Qr(format!("digits 값이 숫자가 아닙니다: {v}")))?
             }
             "period" => {
-                period = v.parse().map_err(|_| Error::Qr(format!("period 값이 숫자가 아닙니다: {v}")))?
+                period = v
+                    .parse()
+                    .map_err(|_| Error::Qr(format!("period 값이 숫자가 아닙니다: {v}")))?
             }
             _ => {}
         }
@@ -114,7 +122,14 @@ pub fn parse_otpauth(uri: &str) -> Result<NewAccount> {
     truncate(&mut issuer, MAX_LABEL_LEN);
     truncate(&mut name, MAX_LABEL_LEN);
 
-    let acc = NewAccount { issuer, name, secret, algorithm, digits, period };
+    let acc = NewAccount {
+        issuer,
+        name,
+        secret,
+        algorithm,
+        digits,
+        period,
+    };
     acc.validate()?;
     Ok(acc)
 }
@@ -162,7 +177,10 @@ impl<'a> Reader<'a> {
     }
 
     fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(len).ok_or_else(|| Error::Qr("길이 값이 올바르지 않습니다".into()))?;
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| Error::Qr("길이 값이 올바르지 않습니다".into()))?;
         if end > self.buf.len() {
             return Err(Error::Qr("내보내기 데이터가 중간에 끊겼습니다".into()));
         }
@@ -183,7 +201,9 @@ impl<'a> Reader<'a> {
                 Ok((field_no, Field::Bytes(self.bytes(len)?)))
             }
             5 => Ok((field_no, Field::Bytes(self.bytes(4)?))),
-            other => Err(Error::Qr(format!("지원하지 않는 protobuf wire type {other}"))),
+            other => Err(Error::Qr(format!(
+                "지원하지 않는 protobuf wire type {other}"
+            ))),
         }
     }
 }
@@ -231,8 +251,6 @@ pub fn parse_migration(uri: &str) -> Result<Vec<NewAccount>> {
 }
 
 fn parse_migration_param(buf: &[u8]) -> Result<Option<NewAccount>> {
-
-
     let mut secret_raw: Option<Vec<u8>> = None;
     let mut name = String::new();
     let mut issuer = String::new();
@@ -270,7 +288,9 @@ fn parse_migration_param(buf: &[u8]) -> Result<Option<NewAccount>> {
     if !is_totp {
         return Ok(None);
     }
-    let Some(raw) = secret_raw else { return Ok(None) };
+    let Some(raw) = secret_raw else {
+        return Ok(None);
+    };
     if raw.is_empty() {
         return Ok(None);
     }
@@ -291,7 +311,14 @@ fn parse_migration_param(buf: &[u8]) -> Result<Option<NewAccount>> {
     truncate(&mut issuer, MAX_LABEL_LEN);
     truncate(&mut name, MAX_LABEL_LEN);
 
-    let acc = NewAccount { issuer, name, secret, algorithm, digits, period: 30 };
+    let acc = NewAccount {
+        issuer,
+        name,
+        secret,
+        algorithm,
+        digits,
+        period: 30,
+    };
     match acc.validate() {
         Ok(()) => Ok(Some(acc)),
         Err(_) => Ok(None),
@@ -332,7 +359,8 @@ mod tests {
     fn migration_uri(entries: &[(&str, &str, &str)]) -> String {
         let mut payload = Vec::new();
         for (secret_b32, name, issuer) in entries {
-            let raw = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, secret_b32).unwrap();
+            let raw =
+                base32::decode(base32::Alphabet::Rfc4648 { padding: false }, secret_b32).unwrap();
             let mut param = field_bytes(1, &raw);
             param.extend(field_bytes(2, name.as_bytes()));
             param.extend(field_bytes(3, issuer.as_bytes()));
@@ -342,7 +370,10 @@ mod tests {
             payload.extend(field_bytes(1, &param));
         }
         payload.extend(field_varint(2, 1));
-        format!("otpauth-migration://offline?data={}", urlencode(&B64.encode(&payload)))
+        format!(
+            "otpauth-migration://offline?data={}",
+            urlencode(&B64.encode(&payload))
+        )
     }
 
     fn urlencode(s: &str) -> String {
@@ -367,17 +398,35 @@ mod tests {
 
     #[test]
     fn otpauth_percent_encoded_label() {
-        let acc = parse_otpauth("otpauth://totp/Jira:user%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Jira").unwrap();
+        let acc = parse_otpauth(
+            "otpauth://totp/Jira:user%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Jira",
+        )
+        .unwrap();
         assert_eq!(acc.name, "user@example.com");
     }
 
     #[test]
     fn otpauth_rejects_bad_input() {
-        assert!(parse_otpauth("otpauth://totp/X:y?digits=6").is_err(), "secret 없음");
-        assert!(parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&digits=abc").is_err(), "digits 비숫자");
-        assert!(parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&period=0").is_err(), "주기 0");
-        assert!(parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&digits=20").is_err(), "자릿수 20");
-        assert!(parse_otpauth("otpauth://hotp/X:y?secret=JBSWY3DPEHPK3PXP").is_err(), "HOTP 미지원");
+        assert!(
+            parse_otpauth("otpauth://totp/X:y?digits=6").is_err(),
+            "secret 없음"
+        );
+        assert!(
+            parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&digits=abc").is_err(),
+            "digits 비숫자"
+        );
+        assert!(
+            parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&period=0").is_err(),
+            "주기 0"
+        );
+        assert!(
+            parse_otpauth("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP&digits=20").is_err(),
+            "자릿수 20"
+        );
+        assert!(
+            parse_otpauth("otpauth://hotp/X:y?secret=JBSWY3DPEHPK3PXP").is_err(),
+            "HOTP 미지원"
+        );
         assert!(parse_otpauth("https://example.com").is_err());
     }
 
@@ -390,7 +439,10 @@ mod tests {
         let accs = parse_migration(&uri).unwrap();
         assert_eq!(accs.len(), 2);
         assert_eq!(accs[0].issuer, "authentik");
-        assert_eq!(accs[0].name, "bamin0422", "발급자 접두어가 이름에서 제거된다");
+        assert_eq!(
+            accs[0].name, "bamin0422",
+            "발급자 접두어가 이름에서 제거된다"
+        );
         assert_eq!(accs[1].issuer, "GitHub");
         assert_eq!(accs[1].secret, "GEZDGNBVGY3TQOJQ");
     }
@@ -400,7 +452,10 @@ mod tests {
         let uri = migration_uri(&[("JBSWY3DPEHPK3PXP", "a:b", "a")]);
         let cut = &uri[..uri.len() - 12];
         let result = parse_migration(cut);
-        assert!(result.is_err(), "잘린 데이터는 오류로 처리되고 패닉하지 않는다");
+        assert!(
+            result.is_err(),
+            "잘린 데이터는 오류로 처리되고 패닉하지 않는다"
+        );
     }
 
     #[test]
@@ -414,7 +469,12 @@ mod tests {
     fn payload_dispatch() {
         let uri = migration_uri(&[("JBSWY3DPEHPK3PXP", "a:b", "a")]);
         assert_eq!(parse_payload(&uri).unwrap().len(), 1);
-        assert_eq!(parse_payload("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP").unwrap().len(), 1);
+        assert_eq!(
+            parse_payload("otpauth://totp/X:y?secret=JBSWY3DPEHPK3PXP")
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(parse_payload("hello world").is_err());
     }
 }

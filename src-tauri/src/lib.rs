@@ -64,8 +64,8 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            let state = AppState::new(token.clone())
-                .map_err(|e| format!("금고를 읽지 못했습니다: {e}"))?;
+            let state =
+                AppState::new(token.clone()).map_err(|e| format!("금고를 읽지 못했습니다: {e}"))?;
             app.manage(state);
 
             // macOS에서는 Dock 아이콘 없이 메뉴바 앱으로 시작한다
@@ -80,7 +80,11 @@ pub fn run() {
                 Ok(listener) => {
                     // Windows(TCP)는 실제 포트가 bind 후에 정해진다
                     let actual = listener.local_endpoint().unwrap_or_default();
-                    let advertised = if actual.is_empty() { endpoint.clone() } else { actual };
+                    let advertised = if actual.is_empty() {
+                        endpoint.clone()
+                    } else {
+                        actual
+                    };
                     if let Err(e) = state::publish_runtime(&advertised, &token) {
                         eprintln!("[otpbar] 실행 정보 기록 실패: {e}");
                     }
@@ -96,7 +100,11 @@ pub fn run() {
                 let state = watch.state::<AppState>();
                 if state.auto_lock_if_idle() {
                     ui::refresh(&watch);
-                    ui::notify(&watch, "OTPBar", "일정 시간 동안 사용하지 않아 금고를 잠갔습니다.");
+                    ui::notify(
+                        &watch,
+                        "OTPBar",
+                        "일정 시간 동안 사용하지 않아 금고를 잠갔습니다.",
+                    );
                 }
             });
 

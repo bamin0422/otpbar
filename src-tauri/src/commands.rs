@@ -59,7 +59,11 @@ pub fn lock(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 #[tauri::command]
-pub fn change_password(state: State<'_, AppState>, current: String, new_password: String) -> CmdResult<()> {
+pub fn change_password(
+    state: State<'_, AppState>,
+    current: String,
+    new_password: String,
+) -> CmdResult<()> {
     state.change_password(&current, &new_password).map_err(err)
 }
 
@@ -78,7 +82,12 @@ pub struct CodeView {
 }
 
 #[tauri::command]
-pub fn get_code(app: AppHandle, state: State<'_, AppState>, query: String, copy: bool) -> CmdResult<CodeView> {
+pub fn get_code(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+    copy: bool,
+) -> CmdResult<CodeView> {
     state.touch();
     let (account, code, remaining) = state.code_for(&query).map_err(err)?;
     let settings = state.settings();
@@ -87,7 +96,12 @@ pub fn get_code(app: AppHandle, state: State<'_, AppState>, query: String, copy:
         let label = format!("{} · {}", account.issuer, account.name);
         ui::notify_code_used(&app, &label, &code, remaining, true, &settings);
     }
-    Ok(CodeView { account, code, remaining, copied: copy })
+    Ok(CodeView {
+        account,
+        code,
+        remaining,
+        copied: copy,
+    })
 }
 
 #[derive(Serialize)]
@@ -97,7 +111,12 @@ pub struct ImportResult {
 }
 
 #[tauri::command]
-pub fn import_source(app: AppHandle, state: State<'_, AppState>, source: String, replace: bool) -> CmdResult<ImportResult> {
+pub fn import_source(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+    replace: bool,
+) -> CmdResult<ImportResult> {
     let (messages, total) = state.import(&source, replace).map_err(err)?;
     ui::refresh(&app);
     Ok(ImportResult { messages, total })
@@ -127,13 +146,19 @@ pub fn add_account(
         digits: digits.unwrap_or(6),
         period: period.unwrap_or(30),
     };
-    let id = state.add_manual(new, replace.unwrap_or(false)).map_err(err)?;
+    let id = state
+        .add_manual(new, replace.unwrap_or(false))
+        .map_err(err)?;
     ui::refresh(&app);
     Ok(id)
 }
 
 #[tauri::command]
-pub fn remove_account(app: AppHandle, state: State<'_, AppState>, query: String) -> CmdResult<AccountView> {
+pub fn remove_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+) -> CmdResult<AccountView> {
     let view = state.remove(&query).map_err(err)?;
     ui::refresh(&app);
     Ok(view)
@@ -158,7 +183,11 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> CmdResult<()> {
+pub fn set_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> CmdResult<()> {
     state.set_settings(settings).map_err(err)?;
     ui::refresh(&app);
     Ok(())
@@ -171,7 +200,9 @@ pub fn hide_window(app: AppHandle) {
 
 #[tauri::command]
 pub fn config_dir() -> String {
-    otpbar_core::util::config_dir().to_string_lossy().to_string()
+    otpbar_core::util::config_dir()
+        .to_string_lossy()
+        .to_string()
 }
 
 /// 업데이트 확인·설치. 서명 검증은 updater 플러그인이 공개키로 수행한다.
@@ -195,7 +226,10 @@ pub async fn install_update(app: AppHandle) -> CmdResult<bool> {
         return Ok(false);
     };
     // 서명이 유효하지 않으면 download_and_install 이 오류를 낸다.
-    update.download_and_install(|_chunk, _total| {}, || {}).await.map_err(err)?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(err)?;
     Ok(true)
 }
 

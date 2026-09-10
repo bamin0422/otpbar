@@ -139,7 +139,13 @@ impl Vault {
     }
 
     pub fn new_at(path: impl Into<std::path::PathBuf>) -> Self {
-        Vault { path: path.into(), sealed: None, key: None, data: None, kdf_params: KdfParams::default() }
+        Vault {
+            path: path.into(),
+            sealed: None,
+            key: None,
+            data: None,
+            kdf_params: KdfParams::default(),
+        }
     }
 
     pub fn path(&self) -> &std::path::Path {
@@ -161,7 +167,13 @@ impl Vault {
         let sealed: SealedVault = serde_json::from_slice(&raw)
             .map_err(|e| Error::Corrupt(format!("금고 파일을 해석하지 못했습니다: {e}")))?;
         let kdf_params = sealed.kdf_params;
-        Ok(Vault { path, sealed: Some(sealed), key: None, data: None, kdf_params })
+        Ok(Vault {
+            path,
+            sealed: Some(sealed),
+            key: None,
+            data: None,
+            kdf_params,
+        })
     }
 
     /// 시험·저사양 환경용으로 KDF 비용을 낮춘다. 실제 사용에서는 호출하지 않는다.
@@ -184,7 +196,9 @@ impl Vault {
             return Err(Error::VaultExists);
         }
         if password.chars().count() < 8 {
-            return Err(Error::InvalidParams("마스터 암호는 8자 이상이어야 합니다".into()));
+            return Err(Error::InvalidParams(
+                "마스터 암호는 8자 이상이어야 합니다".into(),
+            ));
         }
         let salt = random_salt();
         let key = MasterKey::derive(password, &salt, self.kdf_params)?;
@@ -224,7 +238,9 @@ impl Vault {
     pub fn change_password(&mut self, current: &str, new_password: &str) -> Result<()> {
         self.unlock(current)?;
         if new_password.chars().count() < 8 {
-            return Err(Error::InvalidParams("마스터 암호는 8자 이상이어야 합니다".into()));
+            return Err(Error::InvalidParams(
+                "마스터 암호는 8자 이상이어야 합니다".into(),
+            ));
         }
         let salt = random_salt();
         let key = MasterKey::derive(new_password, &salt, self.kdf_params)?;
@@ -276,18 +292,28 @@ impl Vault {
             .accounts
             .iter()
             .filter(|a| {
-                a.id.contains(&q) || a.issuer.to_lowercase().contains(&q) || a.name.to_lowercase().contains(&q)
+                a.id.contains(&q)
+                    || a.issuer.to_lowercase().contains(&q)
+                    || a.name.to_lowercase().contains(&q)
             })
             .collect();
         match hits.len() {
             0 => Err(Error::AccountNotFound(query.into())),
             1 => Ok(hits[0]),
             _ => {
-                let exact: Vec<&&Account> = hits.iter().filter(|a| a.issuer.to_lowercase() == q).collect();
+                let exact: Vec<&&Account> = hits
+                    .iter()
+                    .filter(|a| a.issuer.to_lowercase() == q)
+                    .collect();
                 if exact.len() == 1 {
                     Ok(exact[0])
                 } else {
-                    Err(Error::Ambiguous(hits.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", ")))
+                    Err(Error::Ambiguous(
+                        hits.iter()
+                            .map(|a| a.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ))
                 }
             }
         }
@@ -302,7 +328,8 @@ impl Vault {
     /// 계정을 추가한다. 같은 발급자·이름이 있으면 `replace`가 참일 때만 덮어쓴다.
     pub fn add(&mut self, new: NewAccount, replace: bool) -> Result<String> {
         new.validate()?;
-        let existing_ids: Vec<String> = self.data()?.accounts.iter().map(|a| a.id.clone()).collect();
+        let existing_ids: Vec<String> =
+            self.data()?.accounts.iter().map(|a| a.id.clone()).collect();
         let dup = self
             .data()?
             .accounts
@@ -310,9 +337,14 @@ impl Vault {
             .find(|a| a.issuer == new.issuer && a.name == new.name)
             .map(|a| a.id.clone());
         if dup.is_some() && !replace {
-            return Err(Error::other(format!("이미 있는 계정입니다: {} · {}", new.issuer, new.name)));
+            return Err(Error::other(format!(
+                "이미 있는 계정입니다: {} · {}",
+                new.issuer, new.name
+            )));
         }
-        let id = dup.clone().unwrap_or_else(|| unique_id(&existing_ids, &util::slugify(&[&new.issuer, &new.name])));
+        let id = dup
+            .clone()
+            .unwrap_or_else(|| unique_id(&existing_ids, &util::slugify(&[&new.issuer, &new.name])));
         let account = Account {
             id: id.clone(),
             issuer: new.issuer,
@@ -347,10 +379,19 @@ impl Vault {
         Ok(view)
     }
 
-    pub fn rename(&mut self, query: &str, issuer: Option<String>, name: Option<String>) -> Result<AccountView> {
+    pub fn rename(
+        &mut self,
+        query: &str,
+        issuer: Option<String>,
+        name: Option<String>,
+    ) -> Result<AccountView> {
         let id = self.find(query)?.id.clone();
         let data = self.data.as_mut().ok_or(Error::Locked)?;
-        let acc = data.accounts.iter_mut().find(|a| a.id == id).ok_or(Error::AccountNotFound(id.clone()))?;
+        let acc = data
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == id)
+            .ok_or(Error::AccountNotFound(id.clone()))?;
         if let Some(i) = issuer {
             acc.issuer = i;
         }
@@ -388,7 +429,7 @@ fn unique_id(existing: &[String], base: &str) -> String {
     }
     for n in 2..1000 {
         let candidate = format!("{base}-{n}");
-        if !existing.iter().any(|e| *e == candidate) {
+        if !existing.contains(&candidate) {
             return candidate;
         }
     }
@@ -421,7 +462,11 @@ mod tests {
         /// KDF 비용을 낮춘 금고(시험 속도용).
         fn vault(&self) -> Vault {
             let mut v = Vault::new_at(self.path());
-            v.set_kdf_params(KdfParams { m_cost: 8, t_cost: 1, p_cost: 1 });
+            v.set_kdf_params(KdfParams {
+                m_cost: 8,
+                t_cost: 1,
+                p_cost: 1,
+            });
             v
         }
 
@@ -462,7 +507,10 @@ mod tests {
         // 디스크에서 다시 읽어 열기
         let mut v2 = tmp.reopen();
         assert!(v2.exists() && !v2.is_unlocked());
-        assert!(matches!(v2.unlock("wrong password"), Err(Error::BadPassword)));
+        assert!(matches!(
+            v2.unlock("wrong password"),
+            Err(Error::BadPassword)
+        ));
         v2.unlock("correct horse battery").unwrap();
         let (view, code, _) = v2.code_for("authentik").unwrap();
         assert_eq!(view.issuer, "authentik");
@@ -476,8 +524,14 @@ mod tests {
         v.create("correct horse battery").unwrap();
         v.add(sample(), false).unwrap();
         let raw = std::fs::read_to_string(tmp.path()).unwrap();
-        assert!(!raw.contains("JBSWY3DPEHPK3PXP"), "비밀키가 파일에 남으면 안 된다");
-        assert!(!raw.contains("authentik"), "발급자 이름도 암호문 안에 있어야 한다");
+        assert!(
+            !raw.contains("JBSWY3DPEHPK3PXP"),
+            "비밀키가 파일에 남으면 안 된다"
+        );
+        assert!(
+            !raw.contains("authentik"),
+            "발급자 이름도 암호문 안에 있어야 한다"
+        );
         assert!(!raw.contains("bamin0422"), "계정 이름도 드러나지 않는다");
     }
 

@@ -23,7 +23,10 @@ pub fn spawn(app: AppHandle, endpoint: String, listener: transport::Listener) {
                     // 느린 상대가 스레드를 붙잡지 못하게 시간 제한을 둔다
                     conn.set_timeout(Duration::from_secs(120)).ok();
                     if let Err(err) = handle(&app, &mut conn) {
-                        let body = Response::Error { message: err.to_string(), locked: matches!(err, Error::Locked) };
+                        let body = Response::Error {
+                            message: err.to_string(),
+                            locked: matches!(err, Error::Locked),
+                        };
                         if let Ok(line) = serde_json::to_string(&body) {
                             conn.write_line(&line).ok();
                         }
@@ -39,7 +42,9 @@ pub fn spawn(app: AppHandle, endpoint: String, listener: transport::Listener) {
 }
 
 fn handle(app: &AppHandle, conn: &mut transport::Connection) -> Result<(), Error> {
-    let Some(line) = conn.read_line()? else { return Ok(()) };
+    let Some(line) = conn.read_line()? else {
+        return Ok(());
+    };
     let envelope: Envelope = serde_json::from_str(&line)
         .map_err(|e| Error::other(format!("요청을 해석하지 못했습니다: {e}")))?;
 
@@ -70,10 +75,17 @@ fn dispatch(app: &AppHandle, state: &AppState, request: Request) -> Result<Respo
         Request::List { with_codes } => {
             state.require_unlocked()?;
             state.touch();
-            Ok(Response::List { accounts: state.list_items(with_codes)? })
+            Ok(Response::List {
+                accounts: state.list_items(with_codes)?,
+            })
         }
 
-        Request::Code { query, purpose, copy, wait } => {
+        Request::Code {
+            query,
+            purpose,
+            copy,
+            wait,
+        } => {
             state.require_unlocked()?;
             state.touch();
             let (mut account, mut code, mut remaining) = state.code_for(&query)?;
@@ -92,9 +104,18 @@ fn dispatch(app: &AppHandle, state: &AppState, request: Request) -> Result<Respo
                 copied = true;
             }
             let label = format!("{} · {}", account.issuer, account.name);
-            let detail = if purpose.is_empty() { label.clone() } else { format!("{label} · {purpose}") };
+            let detail = if purpose.is_empty() {
+                label.clone()
+            } else {
+                format!("{label} · {purpose}")
+            };
             ui::notify_code_used(app, &detail, &code, remaining, copied, &settings);
-            Ok(Response::Code { account, code, remaining, copied })
+            Ok(Response::Code {
+                account,
+                code,
+                remaining,
+                copied,
+            })
         }
 
         Request::Import { source, replace } => {
@@ -102,7 +123,10 @@ fn dispatch(app: &AppHandle, state: &AppState, request: Request) -> Result<Respo
             state.touch();
             let (messages, total) = state.import(&source, replace)?;
             ui::refresh(app);
-            Ok(Response::Imported { messages, added: total })
+            Ok(Response::Imported {
+                messages,
+                added: total,
+            })
         }
 
         Request::Init { password } => {

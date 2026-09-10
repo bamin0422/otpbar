@@ -77,9 +77,8 @@ mod imp {
     }
 
     pub fn connect(endpoint: &str) -> Result<super::Connection> {
-        let stream = UnixStream::connect(endpoint).map_err(|e| {
-            Error::other(format!("앱에 연결하지 못했습니다({endpoint}): {e}"))
-        })?;
+        let stream = UnixStream::connect(endpoint)
+            .map_err(|e| Error::other(format!("앱에 연결하지 못했습니다({endpoint}): {e}")))?;
         super::Connection::from_stream(stream)
     }
 }
@@ -130,13 +129,16 @@ mod imp {
     }
 }
 
-pub use imp::{connect, Listener};
 use imp::Inner;
+pub use imp::{connect, Listener};
 
 impl Connection {
     fn from_stream(stream: Inner) -> Result<Self> {
         let reader = BufReader::new(stream.try_clone()?);
-        Ok(Connection { reader, writer: stream })
+        Ok(Connection {
+            reader,
+            writer: stream,
+        })
     }
 
     /// 응답을 기다리는 시간 제한을 건다(앱이 멈춰도 CLI가 매달리지 않게).
@@ -180,7 +182,9 @@ mod tests {
         });
 
         let mut client = connect(&endpoint).unwrap();
-        client.set_timeout(std::time::Duration::from_secs(5)).unwrap();
+        client
+            .set_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         client.write_line("hello").unwrap();
         assert_eq!(client.read_line().unwrap().unwrap(), "echo:hello");
         server.join().unwrap();

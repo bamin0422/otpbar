@@ -31,7 +31,9 @@ impl RuntimeInfo {
     pub fn read() -> Result<Self> {
         let path = util::runtime_path();
         if !path.exists() {
-            return Err(Error::other("실행 중인 OTPBar 앱을 찾지 못했습니다. 앱을 먼저 실행하십시오."));
+            return Err(Error::other(
+                "실행 중인 OTPBar 앱을 찾지 못했습니다. 앱을 먼저 실행하십시오.",
+            ));
         }
         let raw = std::fs::read(&path)?;
         Ok(serde_json::from_slice(&raw)?)
@@ -85,7 +87,10 @@ pub enum Request {
     /// 앱 상태(잠김 여부, 버전)
     Status,
     /// 계정 목록(비밀키 제외). `with_codes`면 코드도 함께 계산해 돌려준다.
-    List { #[serde(default)] with_codes: bool },
+    List {
+        #[serde(default)]
+        with_codes: bool,
+    },
     /// 계정 하나의 코드. `copy`면 앱이 클립보드에 넣고 만료 후 지운다.
     Code {
         query: String,
@@ -98,7 +103,11 @@ pub enum Request {
         wait: bool,
     },
     /// QR 이미지나 URI에서 계정 추가(앱이 처리하므로 CLI는 비밀키를 보지 않는다)
-    Import { source: String, #[serde(default)] replace: bool },
+    Import {
+        source: String,
+        #[serde(default)]
+        replace: bool,
+    },
     /// 금고를 만든다(첫 실행). 앱이 처리하므로 상태가 어긋나지 않는다.
     Init { password: String },
     /// 금고를 연다. 암호는 사용자가 터미널에 직접 입력한 것만 전달된다.
@@ -116,12 +125,30 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    Status { unlocked: bool, version: String, account_count: usize, has_vault: bool },
-    List { accounts: Vec<ListItem> },
-    Code { account: AccountView, code: String, remaining: u64, copied: bool },
-    Imported { messages: Vec<String>, added: usize },
+    Status {
+        unlocked: bool,
+        version: String,
+        account_count: usize,
+        has_vault: bool,
+    },
+    List {
+        accounts: Vec<ListItem>,
+    },
+    Code {
+        account: AccountView,
+        code: String,
+        remaining: u64,
+        copied: bool,
+    },
+    Imported {
+        messages: Vec<String>,
+        added: usize,
+    },
     Ok,
-    Error { message: String, locked: bool },
+    Error {
+        message: String,
+        locked: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +212,10 @@ mod tests {
 
     #[test]
     fn response_error_shape() {
-        let r = Response::Error { message: "잠김".into(), locked: true };
+        let r = Response::Error {
+            message: "잠김".into(),
+            locked: true,
+        };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains("\"status\":\"error\""));
         assert!(s.contains("\"locked\":true"));
@@ -198,7 +228,10 @@ mod tests {
         #[cfg(unix)]
         {
             assert!(!a.is_empty());
-            assert!(a.len() < 100, "유닉스 소켓 경로 길이 제한(SUN_LEN) 안에 들어야 한다: {a}");
+            assert!(
+                a.len() < 100,
+                "유닉스 소켓 경로 길이 제한(SUN_LEN) 안에 들어야 한다: {a}"
+            );
             assert!(a.ends_with(".sock"));
         }
     }

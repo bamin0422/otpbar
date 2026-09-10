@@ -34,7 +34,11 @@ pub struct KdfParams {
 
 impl Default for KdfParams {
     fn default() -> Self {
-        KdfParams { m_cost: 65_536, t_cost: 3, p_cost: 4 }
+        KdfParams {
+            m_cost: 65_536,
+            t_cost: 3,
+            p_cost: 4,
+        }
     }
 }
 
@@ -94,13 +98,24 @@ const AAD: &[u8] = b"otpbar-vault-v1";
 
 impl SealedVault {
     /// 평문(JSON 바이트)을 새 nonce로 봉인한다.
-    pub fn seal(plaintext: &[u8], key: &MasterKey, salt: &[u8], kdf_params: KdfParams) -> Result<Self> {
+    pub fn seal(
+        plaintext: &[u8],
+        key: &MasterKey,
+        salt: &[u8],
+        kdf_params: KdfParams,
+    ) -> Result<Self> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = XNonce::from_slice(&nonce_bytes);
         let ciphertext = key
             .cipher()
-            .encrypt(nonce, Payload { msg: plaintext, aad: AAD })
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: AAD,
+                },
+            )
             .map_err(|_| Error::other("암호화에 실패했습니다"))?;
         Ok(SealedVault {
             version: 1,
@@ -115,13 +130,17 @@ impl SealedVault {
     }
 
     pub fn salt_bytes(&self) -> Result<Vec<u8>> {
-        B64.decode(&self.salt).map_err(|e| Error::Corrupt(format!("salt 디코딩 실패: {e}")))
+        B64.decode(&self.salt)
+            .map_err(|e| Error::Corrupt(format!("salt 디코딩 실패: {e}")))
     }
 
     /// 마스터 키로 평문을 되돌린다. 인증 태그가 맞지 않으면 `BadPassword`.
     pub fn open(&self, key: &MasterKey) -> Result<Zeroizing<Vec<u8>>> {
         if self.version != 1 {
-            return Err(Error::Corrupt(format!("지원하지 않는 금고 버전: {}", self.version)));
+            return Err(Error::Corrupt(format!(
+                "지원하지 않는 금고 버전: {}",
+                self.version
+            )));
         }
         if self.kdf != "argon2id" || self.cipher != "xchacha20poly1305" {
             return Err(Error::Corrupt("알 수 없는 암호 방식".into()));
@@ -136,7 +155,13 @@ impl SealedVault {
             .decode(&self.ciphertext)
             .map_err(|e| Error::Corrupt(format!("ciphertext 디코딩 실패: {e}")))?;
         key.cipher()
-            .decrypt(XNonce::from_slice(&nonce_bytes), Payload { msg: &ciphertext, aad: AAD })
+            .decrypt(
+                XNonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: &ciphertext,
+                    aad: AAD,
+                },
+            )
             .map(Zeroizing::new)
             .map_err(|_| Error::BadPassword)
     }
@@ -175,7 +200,11 @@ mod tests {
 
     // 시험에서는 KDF 비용을 낮춰 빠르게 돌린다(보안 기본값은 Default).
     fn fast() -> KdfParams {
-        KdfParams { m_cost: 8, t_cost: 1, p_cost: 1 }
+        KdfParams {
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        }
     }
 
     #[test]
@@ -204,7 +233,10 @@ mod tests {
         let mut raw = B64.decode(&sealed.ciphertext).unwrap();
         raw[0] ^= 0xff;
         sealed.ciphertext = B64.encode(raw);
-        assert!(matches!(sealed.open(&key), Err(Error::BadPassword)), "변조된 암호문은 열리지 않는다");
+        assert!(
+            matches!(sealed.open(&key), Err(Error::BadPassword)),
+            "변조된 암호문은 열리지 않는다"
+        );
     }
 
     #[test]

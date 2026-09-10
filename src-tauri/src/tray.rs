@@ -44,7 +44,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     }
     // Windows에서는 좌클릭으로 창을 연다(메뉴는 우클릭).
     builder = builder.on_tray_icon_event(|tray, event| {
-        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
             #[cfg(not(target_os = "macos"))]
             ui::show_window(tray.app_handle());
             #[cfg(target_os = "macos")]
@@ -74,20 +79,33 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         builder = builder.item(&item);
     } else if !state.is_unlocked() {
         let item = MenuItemBuilder::with_id(ID_UNLOCK, "잠금 해제…").build(app)?;
-        let hint = MenuItemBuilder::with_id("locked-hint", "금고가 잠겨 있습니다").enabled(false).build(app)?;
+        let hint = MenuItemBuilder::with_id("locked-hint", "금고가 잠겨 있습니다")
+            .enabled(false)
+            .build(app)?;
         builder = builder.item(&hint).item(&item);
     } else {
         let items: Vec<ListItem> = state.list_items(true).unwrap_or_default();
         if items.is_empty() {
-            let empty = MenuItemBuilder::with_id("empty", "등록된 계정이 없습니다").enabled(false).build(app)?;
+            let empty = MenuItemBuilder::with_id("empty", "등록된 계정이 없습니다")
+                .enabled(false)
+                .build(app)?;
             builder = builder.item(&empty);
         }
         for item in &items {
             let code = item.code.clone().unwrap_or_else(|| "------".into());
-            let shown = if settings.mask_codes { ui::masked(&code) } else { ui::pretty(&code) };
+            let shown = if settings.mask_codes {
+                ui::masked(&code)
+            } else {
+                ui::pretty(&code)
+            };
             let remaining = item.remaining.unwrap_or(0);
-            let label = format!("{} · {}    {}    {}초", item.account.issuer, item.account.name, shown, remaining);
-            let entry = MenuItemBuilder::with_id(format!("{ACCOUNT_PREFIX}{}", item.account.id), label).build(app)?;
+            let label = format!(
+                "{} · {}    {}    {}초",
+                item.account.issuer, item.account.name, shown, remaining
+            );
+            let entry =
+                MenuItemBuilder::with_id(format!("{ACCOUNT_PREFIX}{}", item.account.id), label)
+                    .build(app)?;
             builder = builder.item(&entry);
         }
         let sep = PredefinedMenuItem::separator(app)?;
@@ -100,7 +118,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let show = MenuItemBuilder::with_id(ID_SHOW, "OTPBar 열기").build(app)?;
     let update = MenuItemBuilder::with_id(ID_UPDATE, "업데이트 확인…").build(app)?;
     let quit = MenuItemBuilder::with_id(ID_QUIT, "OTPBar 종료").build(app)?;
-    builder = builder.item(&sep2).item(&show).item(&update).item(&PredefinedMenuItem::separator(app)?).item(&quit);
+    builder = builder
+        .item(&sep2)
+        .item(&show)
+        .item(&update)
+        .item(&PredefinedMenuItem::separator(app)?)
+        .item(&quit);
     builder.build()
 }
 
@@ -148,4 +171,3 @@ fn copy_from_tray(app: &AppHandle, query: &str) {
         Err(err) => ui::notify(app, "OTP 오류", &err.to_string()),
     }
 }
-
