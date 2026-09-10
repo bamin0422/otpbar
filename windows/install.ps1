@@ -31,9 +31,11 @@ Write-Host "[1/4] Installing Python packages (pystray, pillow, opencv-python-hea
 
 Write-Host "[2/4] Creating launchers in $BinDir"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-$otpCmd = "@echo off`r`n`"$pyExe`" `"$Repo\cli\otp`" %*`r`n"
+# batch files expand %VAR%, so escape literal percent signs in paths
+$RepoEsc = $Repo.Replace('%', '%%'); $pyEsc = $pyExe.Replace('%', '%%'); $pywEsc = $pywExe.Replace('%', '%%')
+$otpCmd = "@echo off`r`n`"$pyEsc`" `"$RepoEsc\cli\otp`" %*`r`n"
 [IO.File]::WriteAllText((Join-Path $BinDir "otp.cmd"), $otpCmd, [Text.Encoding]::ASCII)
-$trayCmd = "@echo off`r`nstart `"`" `"$pywExe`" `"$Repo\windows\otpbar_tray.py`"`r`n"
+$trayCmd = "@echo off`r`nstart `"`" `"$pywEsc`" `"$RepoEsc\windows\otpbar_tray.py`"`r`n"
 [IO.File]::WriteAllText((Join-Path $BinDir "otpbar.cmd"), $trayCmd, [Text.Encoding]::ASCII)
 
 Write-Host "[3/4] Adding $BinDir to the user PATH"

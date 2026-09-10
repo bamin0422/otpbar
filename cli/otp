@@ -34,7 +34,7 @@ import sys
 import time
 import urllib.parse
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 REPO = "bamin0422/otpbar"
 
 IS_MAC = sys.platform == "darwin"
@@ -50,6 +50,15 @@ SECRETS_PATH = os.path.join(CONFIG_DIR, "secrets.json")  # Windows(DPAPI)·Linux
 SERVICE = "otpbar"
 ALGOS = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# 시스템 도구는 절대 경로로 부른다. PATH(특히 admin 그룹이 쓸 수 있는 /opt/homebrew/bin)에
+# 같은 이름의 가짜 실행 파일을 심어 비밀키를 가로채는 공격을 막기 위해서다.
+SECURITY, PBCOPY, PBPASTE = "/usr/bin/security", "/usr/bin/pbcopy", "/usr/bin/pbpaste"
+OSASCRIPT, OPEN, PKILL = "/usr/bin/osascript", "/usr/bin/open", "/usr/bin/pkill"
+GIT = "/usr/bin/git" if IS_MAC and os.path.exists("/usr/bin/git") else "git"
+_WIN_SYS32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+POWERSHELL = os.path.join(_WIN_SYS32, "WindowsPowerShell", "v1.0", "powershell.exe") if IS_WIN else "powershell"
+CLIP = os.path.join(_WIN_SYS32, "clip.exe") if IS_WIN else "clip"
 
 
 def _find_app_bin() -> str:
@@ -77,13 +86,17 @@ def load_index() -> dict:
 
 
 def _write_private_json(path: str, obj) -> None:
+    """소유자만 읽을 수 있게(0600) 생성 시점부터 잠근 임시 파일에 쓰고 원자적으로 교체한다."""
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(tmp, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
     if not IS_WIN:
         os.chmod(path, 0o600)
+        os.chmod(CONFIG_DIR, 0o700)  # 앱이 먼저 만든 폴더가 0755였어도 여기서 잠근다
 
 
 def save_index(index: dict) -> None:
@@ -139,7 +152,7 @@ def _secrets_file_save(d: dict) -> None:
 
 def store_get(account_id: str) -> str:
     if IS_MAC:
-        r = subprocess.run(["security", "find-generic-password", "-s", SERVICE, "-a", account_id, "-w"],
+        r = subprocess.run([SECURITY, "find-generic-password", "-s", SERVICE, "-a", account_id, "-w"],
                            capture_output=True, text=True)
         if r.returncode != 0:
             raise SystemExit(f"Keychain에서 '{account_id}' 비밀키를 읽지 못했습니다: {r.stderr.strip()}")
@@ -162,14 +175,18 @@ def store_get(account_id: str) -> str:
 
 def store_set(account_id: str, secret: str, label: str) -> None:
     if IS_MAC:
-        cmd = ["security", "add-generic-password", "-s", SERVICE, "-a", account_id, "-w", secret,
-               "-l", f"otpbar: {label}", "-j", "otpbar TOTP secret (base32)", "-U",
-               "-T", "/usr/bin/security"]
-        if APP_BIN and os.path.exists(APP_BIN):
-            cmd += ["-T", APP_BIN]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        # 비밀키를 argv에 싣지 않도록 `security -i`(대화형 모드)의 표준입력으로 명령을 넘긴다.
+        # secret은 base32(A~Z2~7)로, account_id는 slug로 이미 제한되어 있고 label만 따로 정제한다.
+        if not re.fullmatch(r"[A-Z2-7]+", secret):
+            raise SystemExit("비밀키 형식 오류(base32).")
+        safe_label = re.sub(r"[^0-9A-Za-z가-힣 ._@:+-]", "", label)[:80]
+        line = (f'add-generic-password -s {SERVICE} -a {account_id} -w "{secret}" '
+                f'-l "otpbar: {safe_label}" -j "otpbar TOTP secret (base32)" -U -T {SECURITY}')
+        if APP_BIN and os.path.exists(APP_BIN) and re.fullmatch(r"[0-9A-Za-z/._-]+", APP_BIN):
+            line += f" -T {APP_BIN}"
+        r = subprocess.run([SECURITY, "-i"], input=line + "\n", capture_output=True, text=True)
         if r.returncode != 0:
-            raise SystemExit(f"Keychain 저장 실패({account_id}): {r.stderr.strip()}")
+            raise SystemExit(f"Keychain 저장 실패({account_id}): {(r.stderr or r.stdout).strip()}")
         return
     if IS_WIN:
         d = _secrets_file_load()
@@ -181,7 +198,11 @@ def store_set(account_id: str, secret: str, label: str) -> None:
                            input=secret, capture_output=True, text=True)
         if r.returncode == 0:
             return
-    print("경고: secret-tool이 없어 비밀키를 0600 파일에 평문 저장합니다.", file=sys.stderr)
+    if os.environ.get("OTPBAR_ALLOW_PLAINTEXT") != "1":
+        raise SystemExit("secret-tool(libsecret)이 없어 비밀키를 안전하게 저장할 수 없습니다. "
+                         "`sudo apt install libsecret-tools` 후 다시 실행하거나, 위험을 감수하려면 "
+                         "OTPBAR_ALLOW_PLAINTEXT=1 을 설정하십시오(0600 파일에 평문 저장).")
+    print("경고: OTPBAR_ALLOW_PLAINTEXT=1 로 비밀키를 0600 파일에 평문 저장합니다.", file=sys.stderr)
     d = _secrets_file_load()
     d[account_id] = secret
     _secrets_file_save(d)
@@ -189,7 +210,7 @@ def store_set(account_id: str, secret: str, label: str) -> None:
 
 def store_delete(account_id: str) -> None:
     if IS_MAC:
-        subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account_id],
+        subprocess.run([SECURITY, "delete-generic-password", "-s", SERVICE, "-a", account_id],
                        capture_output=True, text=True)
         return
     if IS_LINUX and shutil.which("secret-tool"):
@@ -207,9 +228,22 @@ def normalize_secret(s: str) -> str:
     return s + "=" * (-len(s) % 8)
 
 
+def decode_secret(secret_b32: str) -> bytes:
+    """base32 비밀키를 검증하며 디코드한다. 형식이 틀리면 스택 추적 대신 짧은 오류를 낸다."""
+    try:
+        key = base64.b32decode(normalize_secret(secret_b32), casefold=True)
+    except Exception:
+        raise SystemExit("비밀키 형식 오류: base32(A~Z, 2~7) 문자열이어야 합니다.")
+    if not key:
+        raise SystemExit("비밀키가 비어 있습니다.")
+    return key
+
+
 def totp(secret_b32: str, digits: int = 6, period: int = 30, algorithm: str = "SHA1",
          at: float | None = None) -> str:
-    key = base64.b32decode(normalize_secret(secret_b32), casefold=True)
+    if not 4 <= int(digits) <= 10 or int(period) <= 0:
+        raise SystemExit("자릿수(4~10)나 주기(양수)가 올바르지 않습니다.")
+    key = decode_secret(secret_b32)
     counter = int((time.time() if at is None else at) // period)
     digest = hmac.new(key, struct.pack(">Q", counter), ALGOS[algorithm.upper()]).digest()
     offset = digest[-1] & 0x0F
@@ -304,15 +338,22 @@ def parse_otpauth(uri: str) -> dict:
     if ":" in label:
         issuer, name = [x.strip() for x in label.split(":", 1)]
     issuer = q.get("issuer", issuer)
-    return {"secret": q["secret"], "name": name, "issuer": issuer,
-            "algorithm": q.get("algorithm", "SHA1").upper(), "digits": int(q.get("digits", 6)),
-            "period": int(q.get("period", 30)), "type": u.netloc.lower() or "totp"}
+    if not q.get("secret"):
+        raise SystemExit("otpauth URI에 secret 파라미터가 없습니다.")
+    try:
+        digits, period = int(q.get("digits", 6)), int(q.get("period", 30))
+    except ValueError:
+        raise SystemExit("otpauth URI의 digits/period 값이 숫자가 아닙니다.")
+    return {"secret": q["secret"], "name": name[:120], "issuer": issuer[:80],
+            "algorithm": q.get("algorithm", "SHA1").upper(), "digits": digits,
+            "period": period, "type": u.netloc.lower() or "totp"}
 
 
 def decode_qr_image(path: str) -> list[str]:
     """QR 이미지 → payload 목록. macOS: otpqr(Vision). 그 외: OpenCV → zbarimg 순."""
     if IS_MAC:
-        tool = shutil.which("otpqr") or os.path.join(os.path.dirname(os.path.realpath(__file__)), "otpqr")
+        sibling = os.path.join(os.path.dirname(os.path.realpath(__file__)), "otpqr")  # 같은 설치 폴더 우선
+        tool = sibling if os.path.exists(sibling) else (shutil.which("otpqr") or sibling)
         if os.path.exists(tool):
             r = subprocess.run([tool, path], capture_output=True, text=True)
             if r.returncode != 0:
@@ -365,6 +406,14 @@ def add_account(index: dict, acc: dict, replace: bool = False) -> str:
         return f"건너뜀(HOTP 미지원): {acc.get('issuer')} {acc.get('name')}"
     if acc["algorithm"] not in ALGOS:
         return f"건너뜀(알고리즘 {acc['algorithm']} 미지원): {acc.get('issuer')} {acc.get('name')}"
+    try:
+        digits, period = int(acc["digits"]), int(acc.get("period", 30))
+    except (TypeError, ValueError):
+        return f"건너뜀(자릿수·주기 형식 오류): {acc.get('issuer')} {acc.get('name')}"
+    if not 4 <= digits <= 10 or not 0 < period <= 600:
+        return f"건너뜀(자릿수 {digits}·주기 {period}초 범위 밖): {acc.get('issuer')} {acc.get('name')}"
+    acc["digits"], acc["period"] = digits, period
+    decode_secret(acc["secret"])  # 형식 검증 (실패 시 SystemExit)
     dup = next((a for a in index["accounts"]
                 if a["issuer"] == acc["issuer"] and a["name"] == acc["name"]), None)
     if dup and not replace:
@@ -402,13 +451,13 @@ def notify(title: str, subtitle: str, message: str) -> None:
             script = ['on run argv',
                       'display notification (item 1 of argv) with title (item 2 of argv) subtitle (item 3 of argv) sound name "Pop"',
                       'end run']
-            args = ["osascript"]
+            args = [OSASCRIPT]
             for line in script:
                 args += ["-e", line]
             subprocess.run(args + [message, title, subtitle], capture_output=True)
         elif IS_WIN:
             env = dict(os.environ, OTPBAR_TITLE=f"{title} · {subtitle}" if subtitle else title, OTPBAR_MSG=message)
-            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", _TOAST_PS],
+            subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", _TOAST_PS],
                            capture_output=True, env=env, creationflags=NO_WINDOW)
         elif shutil.which("notify-send"):
             subprocess.run(["notify-send", f"{title} · {subtitle}" if subtitle else title, message], capture_output=True)
@@ -416,17 +465,46 @@ def notify(title: str, subtitle: str, message: str) -> None:
         print(f"(알림 실패: {e})", file=sys.stderr)
 
 
-def copy_clipboard(text: str) -> None:
+def copy_clipboard(text: str, clear_after: int | None = None) -> None:
+    """클립보드에 복사한다. clear_after(초)가 주어지면 그 뒤에도 같은 값이면 자동으로 지운다(분리 프로세스)."""
     if IS_MAC:
-        subprocess.run(["pbcopy"], input=text, text=True, check=False)
+        subprocess.run([PBCOPY], input=text, text=True, check=False)
     elif IS_WIN:
-        subprocess.run(["clip"], input=text, text=True, check=False, creationflags=NO_WINDOW)
+        subprocess.run([CLIP], input=text, text=True, check=False, creationflags=NO_WINDOW)
     elif shutil.which("wl-copy"):
         subprocess.run(["wl-copy"], input=text, text=True, check=False)
     elif shutil.which("xclip"):
         subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True, check=False)
     else:
         print("(클립보드 도구가 없습니다: wl-copy 또는 xclip 필요)", file=sys.stderr)
+        return
+    if clear_after:
+        _schedule_clipboard_clear(text, int(clear_after))
+
+
+def _schedule_clipboard_clear(text: str, seconds: int) -> None:
+    """코드 만료 뒤 클립보드가 여전히 그 코드면 비운다. 숫자 코드만 다루므로 셸 인용이 안전하다."""
+    if not re.fullmatch(r"[0-9]{4,10}", text):
+        return
+    quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        if IS_MAC:  # 값은 셸 문자열이 아니라 위치 인자($1,$2)로 넘긴다
+            sh = f'sleep "$1"; [ "$({PBPASTE})" = "$2" ] && printf "" | {PBCOPY}'
+            subprocess.Popen(["/bin/sh", "-c", sh, "otpbar-clear", str(seconds), text], start_new_session=True, **quiet)
+        elif IS_WIN:
+            ps = ("Add-Type -AssemblyName System.Windows.Forms; Start-Sleep ([int]$env:OTPBAR_WAIT); "
+                  "if ([System.Windows.Forms.Clipboard]::GetText() -eq $env:OTPBAR_CODE) { [System.Windows.Forms.Clipboard]::Clear() }")
+            env = dict(os.environ, OTPBAR_WAIT=str(seconds), OTPBAR_CODE=text)
+            subprocess.Popen([POWERSHELL, "-STA", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps],
+                             creationflags=NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0), env=env, **quiet)
+        elif shutil.which("wl-copy"):
+            sh = 'sleep "$1"; [ "$(wl-paste -n 2>/dev/null)" = "$2" ] && wl-copy --clear'
+            subprocess.Popen(["/bin/sh", "-c", sh, "otpbar-clear", str(seconds), text], start_new_session=True, **quiet)
+        elif shutil.which("xclip"):
+            sh = 'sleep "$1"; [ "$(xclip -selection clipboard -o 2>/dev/null)" = "$2" ] && printf "" | xclip -selection clipboard'
+            subprocess.Popen(["/bin/sh", "-c", sh, "otpbar-clear", str(seconds), text], start_new_session=True, **quiet)
+    except Exception:
+        pass
 
 
 # ---------- 조회 ----------
@@ -485,7 +563,7 @@ def cmd_get(args) -> int:
         code = totp(store_get(a["id"]), a["digits"], a["period"], a["algorithm"])
         rem = remaining(a["period"])
     if args.copy:
-        copy_clipboard(code)
+        copy_clipboard(code, clear_after=rem + 5)  # 만료 5초 뒤 클립보드에서 자동 삭제
     if not args.no_notify:
         purpose = f" · {args.purpose}" if args.purpose else ""
         who = "Claude" if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE") else "otp"
@@ -531,9 +609,16 @@ def cmd_add(args) -> int:
     if args.uri:
         acc = parse_otpauth(args.uri)
     else:
-        if not (args.issuer and args.name and args.secret):
-            raise SystemExit("--issuer, --name, --secret 을 모두 주거나 --uri 를 사용하십시오.")
-        acc = {"secret": args.secret, "issuer": args.issuer, "name": args.name,
+        if not (args.issuer and args.name):
+            raise SystemExit("--issuer 와 --name 을 주거나 --uri 를 사용하십시오.")
+        secret = args.secret
+        if secret:
+            print("주의: 명령줄로 넘긴 비밀키는 셸 히스토리에 남을 수 있습니다. 다음부터는 --secret 을 생략하고 프롬프트에 입력하십시오.",
+                  file=sys.stderr)
+        else:
+            import getpass
+            secret = getpass.getpass("비밀키(base32, 입력은 표시되지 않음): ")
+        acc = {"secret": secret, "issuer": args.issuer, "name": args.name,
                "algorithm": args.algorithm.upper(), "digits": args.digits, "period": args.period, "type": "totp"}
     totp(acc["secret"], acc["digits"], acc["period"], acc["algorithm"])  # 비밀키 형식 검증
     print(add_account(index, acc, replace=args.replace))
@@ -611,6 +696,8 @@ def cmd_secrets(args) -> int:
     """메뉴바·트레이 앱 전용: 계정 메타와 비밀키를 JSON으로 출력한다."""
     if not args.json:
         raise SystemExit("비밀키 출력은 --json 을 명시해야 합니다 (앱 내부용).")
+    if sys.stdout.isatty():
+        raise SystemExit("터미널에 비밀키를 직접 출력하지 않습니다. 이 명령은 앱이 파이프로만 씁니다.")
     index = load_index()
     out = []
     for a in index["accounts"]:
@@ -650,7 +737,9 @@ def fetch_latest_version(timeout: float = 6.0) -> str:
             tags = json.load(r)
     except Exception as e:
         raise SystemExit(f"최신 버전 조회 실패 (네트워크 또는 GitHub API): {e}")
-    names = [t.get("name", "") for t in tags if re.fullmatch(r"v\d+\.\d+\.\d+", t.get("name", ""))]
+    if not isinstance(tags, list):  # rate limit 등에서는 dict(message)가 온다
+        raise SystemExit(f"GitHub API 응답이 예상과 다릅니다: {str(tags)[:120]}")
+    names = [t.get("name", "") for t in tags if isinstance(t, dict) and re.fullmatch(r"v\d+\.\d+\.\d+", t.get("name", ""))]
     if not names:
         raise SystemExit("GitHub에서 버전 태그를 찾지 못했습니다.")
     return max(names, key=_ver_tuple).lstrip("v")
@@ -661,10 +750,7 @@ def repo_root() -> str:
 
 
 def install_method() -> str:
-    """brew | git | unknown. 환경변수 OTPBAR_INSTALL_METHOD 로 강제할 수 있다(시험용)."""
-    forced = os.environ.get("OTPBAR_INSTALL_METHOD")
-    if forced:
-        return forced
+    """brew | git | unknown. 설치 위치로만 판별하며 환경변수로 바꿀 수 없다."""
     real = os.path.realpath(__file__)
     if "/Cellar/otpbar/" in real:
         return "brew"
@@ -674,7 +760,7 @@ def install_method() -> str:
 
 
 def check_update() -> dict:
-    current = os.environ.get("OTPBAR_VERSION_OVERRIDE", __version__)
+    current = __version__
     latest = fetch_latest_version()
     info = {"current": current, "latest": latest,
             "update_available": _ver_tuple(latest) > _ver_tuple(current),
@@ -693,9 +779,9 @@ def _run(cmd: list, **kw) -> subprocess.CompletedProcess:
 
 
 def _relaunch_mac_app(app_path: str) -> None:
-    subprocess.run(["pkill", "-x", "OTPBar"], capture_output=True)
+    subprocess.run([PKILL, "-x", "OTPBar"], capture_output=True)
     time.sleep(0.5)
-    subprocess.run(["open", app_path], capture_output=True)
+    subprocess.run([OPEN, app_path], capture_output=True)
 
 
 def perform_update(info: dict) -> str:
@@ -716,16 +802,25 @@ def perform_update(info: dict) -> str:
         return f"Homebrew로 {latest} 설치 완료. 메뉴바 앱을 다시 시작했습니다."
     if method == "git":
         root = repo_root()
-        r = _run(["git", "-C", root, "pull", "--ff-only"])
+        # 브랜치 최신이 아니라 릴리스 태그를 정확히 체크아웃한다. origin이 공식 저장소일 때만 진행한다.
+        origin = _run([GIT, "-C", root, "remote", "get-url", "origin"]).stdout.strip()
+        if not re.fullmatch(rf"(https://github\.com/|git@github\.com:){REPO}(\.git)?", origin):
+            raise SystemExit(f"origin이 공식 저장소가 아니어서 자동 업데이트를 중단합니다: {origin}")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", latest):
+            raise SystemExit("버전 문자열이 올바르지 않습니다.")
+        r = _run([GIT, "-C", root, "fetch", "--tags", "--quiet", "origin"])
         if r.returncode != 0:
-            raise SystemExit(f"git pull 실패: {r.stderr.strip()[-400:]}")
+            raise SystemExit(f"git fetch 실패: {r.stderr.strip()[-400:]}")
+        r = _run([GIT, "-C", root, "checkout", "--quiet", f"v{latest}"])
+        if r.returncode != 0:
+            raise SystemExit(f"git checkout v{latest} 실패: {r.stderr.strip()[-400:]}")
         if IS_MAC and os.path.exists(os.path.join(root, "build.sh")):
             r = _run(["/bin/zsh", os.path.join(root, "build.sh")], cwd=root)
             if r.returncode != 0:
                 raise SystemExit(f"build.sh 실패: {(r.stderr or r.stdout).strip()[-400:]}")
             _relaunch_mac_app(os.path.expanduser("~/Applications/OTPBar.app"))
-            return f"git pull 후 재빌드 완료({latest}). 메뉴바 앱을 다시 시작했습니다."
-        return f"git pull 완료({latest}). 트레이 앱을 다시 시작하면 반영됩니다."
+            return f"v{latest} 태그 체크아웃 후 재빌드 완료. 메뉴바 앱을 다시 시작했습니다."
+        return f"v{latest} 태그 체크아웃 완료. 트레이 앱을 다시 시작하면 반영됩니다."
     raise SystemExit("설치 방식을 알 수 없습니다. 수동으로 업데이트하십시오: brew upgrade otpbar 또는 git pull")
 
 
@@ -789,7 +884,7 @@ def main(argv=None) -> int:
     s.add_argument("--uri")
     s.add_argument("--issuer")
     s.add_argument("--name")
-    s.add_argument("--secret")
+    s.add_argument("--secret", help="생략하면 표시되지 않는 프롬프트로 입력받음(권장)")
     s.add_argument("--digits", type=int, default=6)
     s.add_argument("--period", type=int, default=30)
     s.add_argument("--algorithm", default="SHA1")

@@ -22,13 +22,30 @@ var lastLoadError = ""
 /// 계정 메타와 비밀키를 CLI(otp secrets --json)에서 받는다.
 /// 앱이 Keychain을 직접 읽으면 macOS 파티션 검사(apple-tool:) 때문에 키체인 암호 창이 뜨므로,
 /// `security` 도구로 조용히 읽을 수 있는 CLI를 경유한다. 비밀키는 메모리에만 머문다.
-/// CLI(otp)를 실행하고 (종료코드, stdout, stderr)를 돌려준다. PATH에 Homebrew·~/bin을 보강한다.
+/// 실행할 otp 경로: 같은 설치 폴더(Cellar/otpbar/x/bin/otp, 또는 build 시 ../bin)의 것을 우선한다.
+/// PATH 조작으로 다른 otp가 끼어드는 것을 막는다. 없으면 PATH에서 찾는다.
+func otpExecutable() -> String? {
+    let bundle = Bundle.main.bundleURL   // …/OTPBar.app
+    let candidates = [
+        bundle.deletingLastPathComponent().appendingPathComponent("bin/otp").path,          // Homebrew Cellar
+        bundle.deletingLastPathComponent().appendingPathComponent("../cli/otp").standardized.path, // 개발 빌드
+        "/opt/homebrew/bin/otp", "/usr/local/bin/otp",
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/otp").path,
+    ]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+}
+
+/// CLI(otp)를 인자 배열 그대로(셸 해석 없이) 실행하고 (종료코드, stdout, stderr)를 돌려준다.
 func runOTP(_ args: [String]) -> (Int32, Data, String) {
-    let home = FileManager.default.homeDirectoryForCurrentUser.path
-    let quoted = args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
+    guard let exe = otpExecutable() else { return (-1, Data(), "otp CLI를 찾지 못했습니다. brew install bamin0422/tap/otpbar") }
+    // 시스템 파이썬을 절대 경로로 실행하고 PATH를 시스템 디렉터리로 제한한다.
+    // (/opt/homebrew/bin 은 admin 그룹이 쓸 수 있어 가짜 python3 를 심는 PATH 하이재킹이 가능하기 때문)
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    p.arguments = ["-c", "export PATH=\"\(home)/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec otp \(quoted)"]
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    p.arguments = [exe] + args
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    p.environment = env
     let out = Pipe(), err = Pipe()
     p.standardOutput = out
     p.standardError = err
@@ -91,6 +108,8 @@ func base32Decode(_ input: String) -> Data? {
 }
 
 func totp(_ acc: Account, at date: Date = Date()) -> String? {
+    // 잘못된 메타(주기 0, 자릿수 과대)로 0 나눗셈·오버플로 트랩이 나지 않도록 범위를 먼저 검사한다
+    guard acc.period > 0, acc.period <= 600, (4...10).contains(acc.digits) else { return nil }
     guard let key = base32Decode(acc.secret), !key.isEmpty else { return nil }
     let counter = UInt64(date.timeIntervalSince1970) / UInt64(acc.period)
     var msg = counter.bigEndian
@@ -285,14 +304,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func menuDidClose(_ menu: NSMenu) {
         timer?.invalidate()
         timer = nil
+        // 메뉴 항목 액션이 처리된 뒤 비밀키를 메모리에서 비운다 (메뉴가 다시 열리면 CLI에서 다시 읽는다)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self = self, self.timer == nil else { return }
+            self.accounts = []
+            self.codeItems.removeAll()
+        }
     }
 
     @objc func copyCode(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let acc = accounts.first(where: { $0.id == id }),
               let code = totp(acc) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(code, forType: .string)
-        postNotification("OTP 복사됨", "\(acc.issuer) · \(acc.name)", "\(pretty(code))   (\(remaining(acc.period))초 남음)")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(code, forType: .string)
+        let rem = remaining(acc.period)
+        let count = pb.changeCount
+        // 코드 만료 5초 뒤, 그 사이 다른 것을 복사하지 않았으면 클립보드를 비운다
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(rem + 5)) {
+            if pb.changeCount == count { pb.clearContents() }
+        }
+        postNotification("OTP 복사됨", "\(acc.issuer) · \(acc.name)", "\(pretty(code))   (\(rem)초 남음, 만료 후 자동 삭제)")
     }
 
     @objc func reloadIndex() { rebuildMenu() }
@@ -311,16 +343,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         guard panel.runModal() == .OK else { return }
         var log = ""
         for url in panel.urls {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            p.arguments = ["-lc", "export PATH=\"\(home)/bin:/opt/homebrew/bin:$PATH\"; otp import \"\(url.path)\" 2>&1"]
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = pipe
-            try? p.run()
-            p.waitUntilExit()
-            log += String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            // 경로를 셸 문자열에 끼워 넣지 않고 인자 배열로 전달한다(명령 주입 방지)
+            let (_, data, err) = runOTP(["import", url.path])
+            log += (String(data: data, encoding: .utf8) ?? "") + err
         }
         let alert = NSAlert()
         alert.messageText = "가져오기 결과"

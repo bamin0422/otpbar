@@ -140,8 +140,9 @@ class Tray:
             except SystemExit as e:
                 cli.notify("OTP 오류", a["id"], str(e))
                 return
-            cli.copy_clipboard(code)
-            cli.notify("OTP 복사됨", f"{a['issuer']} · {a['name']}", f"{cli.fmt_code(code)}   ({cli.remaining(a['period'])}초 남음)")
+            rem = cli.remaining(a["period"])
+            cli.copy_clipboard(code, clear_after=rem + 5)  # 만료 후 클립보드 자동 삭제
+            cli.notify("OTP 복사됨", f"{a['issuer']} · {a['name']}", f"{cli.fmt_code(code)}   ({rem}초 남음, 만료 후 자동 삭제)")
         return action
 
     # ---- 동작 ----
@@ -165,6 +166,8 @@ class Tray:
                     cli.notify("가져오기 완료", os.path.basename(p), "메뉴를 다시 열면 계정이 보입니다.")
                 except SystemExit as e:
                     cli.notify("가져오기 실패", os.path.basename(p), str(e))
+                except Exception as e:  # 악성·손상 QR로 스레드가 조용히 죽지 않게 한다
+                    cli.notify("가져오기 실패", os.path.basename(p), f"{type(e).__name__}: {e}")
             icon.update_menu()
         threading.Thread(target=worker, daemon=True).start()
 
