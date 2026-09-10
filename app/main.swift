@@ -22,23 +22,54 @@ var lastLoadError = ""
 /// 계정 메타와 비밀키를 CLI(otp secrets --json)에서 받는다.
 /// 앱이 Keychain을 직접 읽으면 macOS 파티션 검사(apple-tool:) 때문에 키체인 암호 창이 뜨므로,
 /// `security` 도구로 조용히 읽을 수 있는 CLI를 경유한다. 비밀키는 메모리에만 머문다.
-func loadAccounts() -> [Account] {
+/// CLI(otp)를 실행하고 (종료코드, stdout, stderr)를 돌려준다. PATH에 Homebrew·~/bin을 보강한다.
+func runOTP(_ args: [String]) -> (Int32, Data, String) {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let quoted = args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    p.arguments = ["-c", "export PATH=\"\(home)/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec otp secrets --json"]
+    p.arguments = ["-c", "export PATH=\"\(home)/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; exec otp \(quoted)"]
     let out = Pipe(), err = Pipe()
     p.standardOutput = out
     p.standardError = err
-    do { try p.run() } catch { lastLoadError = "otp 실행 실패: \(error)"; return [] }
-    p.waitUntilExit()
+    do { try p.run() } catch { return (-1, Data(), "otp 실행 실패: \(error)") }
     let data = out.fileHandleForReading.readDataToEndOfFile()
-    if p.terminationStatus != 0 {
-        lastLoadError = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "otp 오류"
+    let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    p.waitUntilExit()
+    return (p.terminationStatus, data, errText)
+}
+
+func loadAccounts() -> [Account] {
+    let (status, data, err) = runOTP(["secrets", "--json"])
+    if status != 0 {
+        lastLoadError = err.isEmpty ? "otp 오류" : err
         return []
     }
     lastLoadError = ""
     return (try? JSONDecoder().decode([Account].self, from: data)) ?? []
+}
+
+struct UpdateInfo: Codable {
+    let current: String
+    let latest: String
+    let update_available: Bool
+    let method: String
+    let compare_url: String
+}
+
+func checkUpdate() -> UpdateInfo? {
+    let (status, data, _) = runOTP(["update", "--check", "--json"])
+    guard status == 0 else { return nil }
+    return try? JSONDecoder().decode(UpdateInfo.self, from: data)
+}
+
+func postNotification(_ title: String, _ subtitle: String, _ body: String) {
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.subtitle = subtitle
+    content.body = body
+    content.sound = .default
+    UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
 }
 
 func base32Decode(_ input: String) -> Data? {
@@ -93,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     var accounts: [Account] = []
     var codeItems: [(NSMenuItem, Account)] = []
     var timer: Timer?
+    var updateInfo: UpdateInfo?
+    var updating = false
+    var updateTimer: Timer?
     let mono = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -108,6 +142,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         rebuildMenu()
+        // 업데이트 자동 확인: 실행 5초 후 1회, 이후 24시간마다
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.backgroundUpdateCheck(manual: false) }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 86_400, repeats: true) { [weak self] _ in
+            DispatchQueue.global().async { self?.backgroundUpdateCheck(manual: false) }
+        }
+    }
+
+    func backgroundUpdateCheck(manual: Bool) {
+        let info = checkUpdate()
+        DispatchQueue.main.async {
+            self.updateInfo = info
+            guard let info = info else {
+                if manual { self.alert("업데이트 확인 실패", "최신 버전을 조회하지 못했습니다. 네트워크 상태를 확인하십시오.") }
+                return
+            }
+            if info.update_available {
+                postNotification("OTPBar 업데이트", "\(info.current) → \(info.latest)", "메뉴에서 '업데이트 \(info.latest) 설치…'를 누르면 설치합니다.")
+                if manual { self.offerInstall(info) }
+            } else if manual {
+                self.alert("최신 상태입니다", "현재 \(info.current), 최신 \(info.latest)")
+            }
+        }
+    }
+
+    func alert(_ title: String, _ text: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
+    func offerInstall(_ info: UpdateInfo) {
+        let a = NSAlert()
+        a.messageText = "새 버전 \(info.latest)이 있습니다"
+        a.informativeText = "현재 \(info.current). 설치 방식: \(info.method)\n변경 내역: \(info.compare_url)"
+        a.addButton(withTitle: "지금 설치")
+        a.addButton(withTitle: "나중에")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn { installUpdate() }
+    }
+
+    @objc func manualCheckUpdate() {
+        DispatchQueue.global().async { [weak self] in self?.backgroundUpdateCheck(manual: true) }
+    }
+
+    @objc func installUpdate() {
+        guard !updating else { return }
+        updating = true
+        postNotification("OTPBar 업데이트", "설치 중…", "완료되면 앱이 자동으로 다시 시작됩니다.")
+        DispatchQueue.global().async { [weak self] in
+            let (status, data, err) = runOTP(["update", "--json"])
+            DispatchQueue.main.async {
+                self?.updating = false
+                if status == 0 {
+                    let text = String(data: data, encoding: .utf8) ?? ""
+                    let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["result"] as? String ?? text
+                    postNotification("OTPBar 업데이트 완료", "", result)
+                } else {
+                    self?.alert("업데이트 실패", err.isEmpty ? "otp update 가 실패했습니다." : err)
+                }
+            }
+        }
     }
 
     // 알림은 앱이 앞에 있어도 배너로 보인다
@@ -119,6 +216,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     func rebuildMenu() {
         menu.removeAllItems()
         codeItems.removeAll()
+        if let info = updateInfo, info.update_available {
+            let up = NSMenuItem(title: updating ? "업데이트 설치 중…" : "업데이트 \(info.latest) 설치…",
+                                action: #selector(installUpdate), keyEquivalent: "")
+            up.target = self
+            up.isEnabled = !updating
+            menu.addItem(up)
+            menu.addItem(.separator())
+        }
         accounts = loadAccounts()
         if accounts.isEmpty {
             let msg = lastLoadError.isEmpty ? "등록된 계정이 없습니다" : "otp CLI 오류: \(lastLoadError.trimmingCharacters(in: .whitespacesAndNewlines))"
@@ -143,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let folder = NSMenuItem(title: "설정 폴더 열기", action: #selector(openFolder), keyEquivalent: "")
         folder.target = self
         menu.addItem(folder)
+        let upd = NSMenuItem(title: "업데이트 확인…", action: #selector(manualCheckUpdate), keyEquivalent: "u")
+        upd.target = self
+        menu.addItem(upd)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "OTPBar 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -184,13 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
               let code = totp(acc) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(code, forType: .string)
-        let content = UNMutableNotificationContent()
-        content.title = "OTP 복사됨"
-        content.subtitle = "\(acc.issuer) · \(acc.name)"
-        content.body = "\(pretty(code))   (\(remaining(acc.period))초 남음)"
-        content.sound = .default
-        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        postNotification("OTP 복사됨", "\(acc.issuer) · \(acc.name)", "\(pretty(code))   (\(remaining(acc.period))초 남음)")
     }
 
     @objc func reloadIndex() { rebuildMenu() }

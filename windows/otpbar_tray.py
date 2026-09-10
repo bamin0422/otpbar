@@ -67,10 +67,62 @@ class Tray:
             pystray.MenuItem("QR 이미지에서 가져오기…", self.import_qr),
             pystray.MenuItem("새로 고침", lambda icon, item: icon.update_menu()),
             pystray.MenuItem("설정 폴더 열기", self.open_folder),
+            pystray.MenuItem(self._update_label, self.check_or_install_update),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("OTPBar 종료", lambda icon, item: icon.stop()),
         ]
         return items
+
+    # ---- 업데이트 ----
+    update_info = None
+    updating = False
+
+    def _update_label(self, item):
+        if self.updating:
+            return "업데이트 설치 중…"
+        if self.update_info and self.update_info.get("update_available"):
+            return f"업데이트 {self.update_info['latest']} 설치"
+        return "업데이트 확인"
+
+    def check_or_install_update(self, icon, item):
+        def worker():
+            try:
+                if self.update_info and self.update_info.get("update_available"):
+                    self.updating = True
+                    icon.update_menu()
+                    cli.notify("OTPBar 업데이트", "설치 중", "완료되면 트레이 앱이 다시 시작됩니다.")
+                    result = cli.perform_update(self.update_info)
+                    cli.notify("OTPBar 업데이트 완료", "", result)
+                    self.updating = False
+                    icon.stop()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)  # 새 코드로 재시작
+                info = cli.check_update()
+                self.update_info = info
+                if info["update_available"]:
+                    cli.notify("OTPBar 업데이트", f"{info['current']} → {info['latest']}", "메뉴의 '업데이트 설치'를 누르면 설치합니다.")
+                else:
+                    cli.notify("OTPBar", "최신 상태입니다", f"현재 {info['current']}, 최신 {info['latest']}")
+            except SystemExit as e:
+                self.updating = False
+                cli.notify("OTPBar 업데이트 실패", "", str(e))
+            icon.update_menu()
+        threading.Thread(target=worker, daemon=True).start()
+
+    def auto_update_check(self):
+        """실행 5초 후 1회, 이후 24시간마다 확인해 새 버전이 있으면 알린다."""
+        def loop():
+            import time
+            time.sleep(5)
+            while True:
+                try:
+                    info = cli.check_update()
+                    self.update_info = info
+                    if info["update_available"]:
+                        cli.notify("OTPBar 업데이트", f"{info['current']} → {info['latest']}", "트레이 메뉴의 '업데이트 설치'를 누르면 설치합니다.")
+                except SystemExit:
+                    pass
+                time.sleep(86_400)
+        threading.Thread(target=loop, daemon=True).start()
 
     def _text_for(self, a):
         def text(item):
@@ -124,6 +176,7 @@ class Tray:
             subprocess.run(["xdg-open", cli.CONFIG_DIR])
 
     def run(self):
+        self.auto_update_check()
         self.icon.run()
 
 
