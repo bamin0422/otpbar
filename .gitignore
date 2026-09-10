@@ -3,13 +3,13 @@ build/
 bin/
 *.o
 *.dSYM/
+__pycache__/
 
-# 시험용 QR 이미지·URI (비밀키가 들어 있음)
-*.png
-*.jpg
-*.jpeg
-*.heic
+# 시험용 QR 이미지·URI (비밀키가 들어 있음). 디자인 자산(assets/)은 커밋한다.
+test-*.png
+test-*.jpg
 *_uri.txt
+assets/AppIcon.iconset/
 
 # macOS
 .DS_Store

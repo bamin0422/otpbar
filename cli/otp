@@ -34,7 +34,7 @@ import sys
 import time
 import urllib.parse
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = os.name == "nt"

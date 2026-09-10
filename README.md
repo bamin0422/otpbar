@@ -1,6 +1,12 @@
 # OTPBar
 
-Google OTP(Google Authenticator)에 등록한 계정의 일회용 코드를 Mac에서 만들고, 메뉴바와 CLI로 꺼내 쓰는 개인용 도구입니다. Claude Code는 CLI(`otp get`)로 코드를 받아 로그인 폼에 입력합니다.
+![OTPBar](assets/banner.png)
+
+Google OTP(Google Authenticator)에 등록한 계정의 일회용 코드를 Mac·Windows에서 만들고, 메뉴바(트레이)와 CLI로 꺼내 쓰는 개인용 도구입니다. Claude Code 같은 자동화 도구는 CLI(`otp get`)로 코드를 받아 로그인 폼에 입력합니다.
+
+```bash
+brew install bamin0422/tap/otpbar   # macOS
+```
 
 ## 구성
 

@@ -36,6 +36,9 @@ cli = load_cli()
 
 
 def make_icon() -> Image.Image:
+    bundled = os.path.join(os.path.dirname(HERE), "assets", "icon-256.png")
+    if os.path.exists(bundled):
+        return Image.open(bundled).convert("RGBA")
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle((4, 4, 60, 60), radius=16, fill=(30, 36, 50, 255))

@@ -14,6 +14,7 @@ APP=build/OTPBar.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp app/Info.plist "$APP/Contents/Info.plist"
+cp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 swiftc -O app/main.swift -o "$APP/Contents/MacOS/OTPBar"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "  (codesign 생략)"
 
