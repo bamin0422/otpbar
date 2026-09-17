@@ -5,6 +5,8 @@
 //! - 사용자와의 대화는 메뉴, 시스템 알림, 그리고 입력이 필요한 순간의 짧은 다이얼로그로 한다.
 
 mod agent;
+mod fallback;
+mod log;
 mod prompt;
 mod state;
 mod tray;
@@ -20,9 +22,17 @@ use crate::state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    log::session_start(otpbar_core::VERSION);
     let token = crypto::random_token();
 
     let mut builder = tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            fallback::fallback_list,
+            fallback::fallback_copy,
+            fallback::fallback_unlock,
+            fallback::fallback_retry_tray,
+            fallback::fallback_check_update,
+        ])
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -51,8 +61,11 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            let state =
-                AppState::new(token.clone()).map_err(|e| format!("금고를 읽지 못했습니다: {e}"))?;
+            let state = AppState::new(token.clone()).map_err(|e| {
+                log!("금고를 읽지 못했습니다: {e}");
+                format!("금고를 읽지 못했습니다: {e}")
+            })?;
+            log!("금고 파일을 읽었습니다.");
             app.manage(state);
 
             // 창이 없는 앱이므로 Dock·작업 표시줄에 나타나지 않는다
@@ -62,16 +75,30 @@ pub fn run() {
             // 금고를 준비한다. 기본 구성에서는 암호 없이 바로 열린다.
             let state = handle.state::<AppState>();
             match state.ensure_ready() {
-                Ok(true) => {}
-                Ok(false) => ui::notify(
-                    &handle,
-                    "OTPBar",
-                    "금고가 잠겨 있습니다. 메뉴바 아이콘 → 잠금 해제를 누르십시오.",
-                ),
-                Err(e) => eprintln!("[otpbar] 금고를 준비하지 못했습니다: {e}"),
+                Ok(true) => log!("금고를 열었습니다."),
+                Ok(false) => {
+                    log!("금고가 잠겨 있습니다(암호 보호).");
+                    ui::notify(
+                        &handle,
+                        "OTPBar",
+                        "금고가 잠겨 있습니다. 메뉴바 아이콘 → 잠금 해제를 누르십시오.",
+                    );
+                }
+                Err(e) => log!("금고를 준비하지 못했습니다: {e}"),
             }
 
-            tray::create(&handle)?;
+            if let Err(e) = tray::create(&handle) {
+                // 여기서 실패하면 트레이도 창도 없다. 대체 창이 마지막 수단이다.
+                log!("트레이를 만들지 못했습니다: {e}");
+                fallback::open(&handle);
+            } else {
+                log!("트레이를 만들었습니다. 등록 여부를 확인합니다.");
+                tray::watch_registration(&handle);
+            }
+
+            // 시작할 때 조용히 확인한다. 트레이를 쓸 수 없는 상황에서도 알림은 뜨므로,
+            // 이번처럼 진입점이 막혔을 때 다음 버전으로 빠져나갈 길이 된다.
+            check_update_on_start(&handle);
 
             // 로컬 에이전트: CLI 요청을 받는다
             let endpoint = ipc::default_endpoint();
@@ -227,6 +254,44 @@ pub(crate) fn open_path(app: &tauri::AppHandle, path: &Path) {
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
     {
         ui::notify(app, "OTPBar", &format!("폴더를 열지 못했습니다: {e}"));
+    }
+}
+
+/// 시작 직후 조용히 업데이트를 확인한다. 알림만 띄우고 설치는 하지 않는다.
+///
+/// 2.1.0에서 업데이트 경로가 트레이 메뉴 하나뿐이었던 탓에, Windows에서 트레이가
+/// 뜨지 않은 사용자는 고친 버전을 받을 방법조차 없었다. 알림은 트레이와 무관하게
+/// 뜨므로, 진입점이 막혀도 다음 버전이 있다는 사실은 전달된다.
+pub(crate) fn check_update_on_start(app: &tauri::AppHandle) {
+    #[cfg(desktop)]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            // 켜자마자 네트워크를 쓰면 시작이 느려 보인다. 잠깐 미룬다.
+            std::thread::sleep(Duration::from_secs(10));
+            tauri::async_runtime::spawn(async move {
+                use tauri_plugin_updater::UpdaterExt;
+                let Ok(updater) = app.updater() else {
+                    log!("업데이터를 쓸 수 없습니다.");
+                    return;
+                };
+                match updater.check().await {
+                    Ok(Some(update)) => {
+                        log!("새 버전 {}을 찾았습니다.", update.version);
+                        ui::notify(
+                            &app,
+                            "OTPBar 업데이트",
+                            &format!(
+                                "{} 버전이 나왔습니다. 메뉴의 '업데이트 확인'에서 설치하십시오.",
+                                update.version
+                            ),
+                        );
+                    }
+                    Ok(None) => log!("최신 상태입니다."),
+                    Err(e) => log!("업데이트 확인 실패: {e}"),
+                }
+            });
+        });
     }
 }
 

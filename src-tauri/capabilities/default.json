@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "OTPBar 트레이 앱에 필요한 최소 권한",
-  "windows": [],
+  "windows": [
+    "fallback"
+  ],
   "permissions": [
     "core:default",
     "clipboard-manager:allow-write-text",

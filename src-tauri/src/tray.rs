@@ -72,6 +72,9 @@ pub fn tick(app: &AppHandle) {
 }
 
 /// 트레이 아이콘을 만든다(앱 시작 시 1회).
+///
+/// **이 함수가 `Ok`를 돌려주어도 아이콘이 화면에 있다는 뜻은 아니다.** Windows에서
+/// 실제 등록이 되었는지는 [`watch_registration`]이 따로 확인한다. 이유는 그쪽 주석에 적었다.
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app)?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -79,8 +82,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("OTPBar")
         .show_menu_on_left_click(true)
         .on_menu_event(on_menu_event);
-    if let Ok(icon) = tauri::image::Image::from_bytes(TRAY_ICON_PNG) {
-        builder = builder.icon(icon);
+    match tauri::image::Image::from_bytes(TRAY_ICON_PNG) {
+        Ok(icon) => builder = builder.icon(icon),
+        Err(e) => crate::log!("트레이 아이콘을 읽지 못했습니다: {e}"),
     }
     // macOS 메뉴바에서는 템플릿 이미지로 다크·라이트 모드에 맞춘다.
     #[cfg(target_os = "macos")]
@@ -90,6 +94,86 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     // 여기서 메뉴를 다시 만들면 방금 열린 메뉴가 닫힌다. 코드 갱신은 tick()이 담당한다.
     builder.build(app)?;
     Ok(())
+}
+
+/// 트레이가 운영체제에 실제로 등록되었는지 확인하고, 아니면 다시 만든다(Windows 전용).
+///
+/// # 왜 필요한가
+///
+/// `tray-icon` 크레이트의 Windows 구현은 `Shell_NotifyIconW(NIM_ADD)`가 실패해도
+/// 오류를 돌려주지 않는다. 창 핸들만 살려 두고 탐색기가 보내는 `TaskbarCreated`
+/// 브로드캐스트를 기다린다(`platform_impl/windows/mod.rs`). 앱이 explorer.exe의
+/// 작업 표시줄보다 먼저 뜨는 경우를 위한 처리인데, 그 브로드캐스트를 놓치면
+/// 아이콘은 영영 나타나지 않는다. `build()`는 성공했으므로 앱 쪽은 아무것도 모른다.
+///
+/// 2.1.0에서 창을 없앤 뒤로는 이 상태가 곧 "앱을 쓸 방법이 없음"을 뜻한다.
+/// 그래서 등록 여부를 직접 확인한다. 확인 수단은 `set_icon`이다. 이 호출은
+/// `NIM_MODIFY`로 내려가고, 등록되지 않은 아이콘에 대해서는 실패한다.
+#[cfg(windows)]
+pub fn watch_registration(app: &AppHandle) {
+    /// 재시도 횟수. 1·2·4·8·16·30초 간격으로 약 1분간 지켜본다.
+    const MAX_ATTEMPTS: u32 = 6;
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let mut delay = 1u64;
+        for attempt in 1..=MAX_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_secs(delay));
+            if is_registered(&app) {
+                crate::log!("트레이 등록을 확인했습니다 (시도 {attempt}/{MAX_ATTEMPTS})");
+                return;
+            }
+            crate::log!(
+                "트레이가 등록되지 않았습니다 — 다시 만듭니다 (시도 {attempt}/{MAX_ATTEMPTS})"
+            );
+            recreate(&app);
+            delay = (delay * 2).min(30);
+        }
+        crate::log!("트레이 등록에 끝내 실패했습니다. 대체 창을 엽니다.");
+        crate::fallback::open(&app);
+    });
+}
+
+/// Windows가 아닌 곳에서는 할 일이 없다. 메뉴바·앱인디케이터는 등록이 조용히 실패하지 않는다.
+#[cfg(not(windows))]
+pub fn watch_registration(_app: &AppHandle) {}
+
+/// 트레이 조작은 주 스레드에서만 안전하므로 건너가서 확인하고 결과만 받아 온다.
+#[cfg(windows)]
+fn is_registered(app: &AppHandle) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    if app
+        .run_on_main_thread(move || {
+            let ok = match handle.tray_by_id(TRAY_ID) {
+                Some(tray) => match tauri::image::Image::from_bytes(TRAY_ICON_PNG) {
+                    // NIM_MODIFY가 통하면 등록되어 있다는 뜻이다.
+                    Ok(icon) => tray.set_icon(Some(icon)).is_ok(),
+                    // 아이콘을 못 읽는 것은 별개 문제다. 등록 실패로 오판하지 않는다.
+                    Err(_) => true,
+                },
+                None => false,
+            };
+            tx.send(ok).ok();
+        })
+        .is_err()
+    {
+        return false;
+    }
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn recreate(app: &AppHandle) {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        handle.remove_tray_by_id(TRAY_ID);
+        if let Err(e) = create(&handle) {
+            crate::log!("트레이를 다시 만들지 못했습니다: {e}");
+        }
+    })
+    .ok();
 }
 
 /// 상태가 바뀔 때 메뉴를 다시 만든다.
@@ -243,7 +327,7 @@ fn handle(app: &AppHandle, id: &str) {
 }
 
 /// 잠금 해제. 자동 해제가 켜져 있으면 그대로 열고, 암호 보호 중이면 암호를 묻는다.
-fn unlock_flow(app: &AppHandle) {
+pub(crate) fn unlock_flow(app: &AppHandle) {
     let state = app.state::<AppState>();
     match state.ensure_ready() {
         Ok(true) => {
