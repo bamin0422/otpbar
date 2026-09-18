@@ -17,7 +17,7 @@ anyhow = "1"
 argon2 = "0.5"
 base32 = "0.5"
 base64 = "0.22"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
 hmac = "0.12"
