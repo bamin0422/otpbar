@@ -21,6 +21,7 @@ pub const TRAY_ID: &str = "otpbar-tray";
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-mono@2x.png");
 
 const ID_DASHBOARD: &str = "dashboard";
+const ID_HOTKEY: &str = "hotkey";
 const ID_IMPORT: &str = "import";
 const ID_LOCK: &str = "lock";
 const ID_UNLOCK: &str = "unlock";
@@ -44,6 +45,18 @@ struct CodeRow {
 fn code_rows() -> &'static Mutex<Vec<CodeRow>> {
     static ROWS: OnceLock<Mutex<Vec<CodeRow>>> = OnceLock::new();
     ROWS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// `CmdOrCtrl+Shift+O`를 그 기기에서 실제로 누르는 모양으로 바꾼다.
+fn pretty_combo(combo: &str) -> String {
+    #[cfg(target_os = "macos")]
+    let s = combo
+        .replace("CmdOrCtrl", "⌘")
+        .replace("Shift", "⇧")
+        .replace('+', "");
+    #[cfg(not(target_os = "macos"))]
+    let s = combo.replace("CmdOrCtrl", "Ctrl");
+    s
 }
 
 fn row_text(label: &str, code: &str, remaining: u64, mask: bool) -> String {
@@ -246,6 +259,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let notify_code = CheckMenuItemBuilder::with_id(ID_NOTIFY_CODE, "알림에 코드 표시")
         .checked(settings.show_code_in_notification)
         .build(app)?;
+    let hotkey = CheckMenuItemBuilder::with_id(
+        ID_HOTKEY,
+        format!("단축키로 복사 ({})", pretty_combo(&settings.hotkey)),
+    )
+    .checked(settings.hotkey_enabled)
+    .build(app)?;
     let autostart = CheckMenuItemBuilder::with_id(ID_AUTOSTART, "로그인할 때 실행")
         .checked(crate::autostart_enabled(app))
         .build(app)?;
@@ -262,6 +281,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&import)
         .item(&mask)
         .item(&notify_code)
+        .item(&hotkey)
         .item(&autostart)
         .item(&password);
     if password_protected {
@@ -307,6 +327,7 @@ fn handle(app: &AppHandle, id: &str) {
             state.set_settings(s).ok();
             ui::refresh(app);
         }
+        ID_HOTKEY => crate::hotkey::toggle(app),
         ID_AUTOSTART => {
             crate::toggle_autostart(app);
             ui::refresh(app);
@@ -437,6 +458,7 @@ fn copy_from_tray(app: &AppHandle, query: &str) {
     state.touch();
     match state.code_for(query) {
         Ok((account, code, remaining)) => {
+            state.remember_last_used(&account.id);
             let settings = state.settings();
             ui::copy_code(app, &code, settings.clipboard_clear_secs);
             let label = format!("{} · {}", account.issuer, account.name);

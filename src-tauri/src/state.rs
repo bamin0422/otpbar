@@ -229,6 +229,26 @@ impl AppState {
         false
     }
 
+    /// 전역 단축키가 꺼낼 계정을 기억한다. 코드를 복사할 때마다 부른다.
+    pub fn remember_last_used(&self, id: &str) {
+        let mut s = self.settings();
+        if s.last_used_id.as_deref() == Some(id) {
+            return; // 같은 계정을 연달아 쓰면 파일을 다시 쓸 이유가 없다
+        }
+        s.last_used_id = Some(id.to_string());
+        self.set_settings(s).ok();
+    }
+
+    /// 기억을 비운다. 계정이 사라진 경우에 부른다.
+    pub fn forget_last_used(&self) {
+        let mut s = self.settings();
+        if s.last_used_id.is_none() {
+            return;
+        }
+        s.last_used_id = None;
+        self.set_settings(s).ok();
+    }
+
     /// 마지막 조작 이후 지난 시간(초).
     pub fn idle_secs(&self) -> u64 {
         self.lock_inner().last_activity.elapsed().as_secs()

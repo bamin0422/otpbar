@@ -104,6 +104,7 @@ pub fn dashboard_copy(app: AppHandle, id: String) -> Result<String, String> {
     }
     state.touch();
     let (account, code, remaining) = state.code_for(&id).map_err(|e| e.to_string())?;
+    state.remember_last_used(&account.id);
     let settings = state.settings();
     crate::ui::copy_code(&app, &code, settings.clipboard_clear_secs);
     Ok(format!(

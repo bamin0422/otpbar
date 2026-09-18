@@ -6,6 +6,7 @@
 
 mod agent;
 mod dashboard;
+mod hotkey;
 mod log;
 mod prompt;
 mod state;
@@ -43,6 +44,7 @@ pub fn run() {
     {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 None,
@@ -99,6 +101,7 @@ pub fn run() {
 
             // 시작할 때 조용히 확인한다. 트레이를 쓸 수 없는 상황에서도 알림은 뜨므로,
             // 이번처럼 진입점이 막혔을 때 다음 버전으로 빠져나갈 길이 된다.
+            hotkey::register(&handle);
             check_update_on_start(&handle);
 
             // 로컬 에이전트: CLI 요청을 받는다
@@ -274,6 +277,10 @@ pub(crate) fn check_update_on_start(app: &tauri::AppHandle) {
             // 켜자마자 네트워크를 쓰면 시작이 느려 보인다. 잠깐 미룬다.
             std::thread::sleep(Duration::from_secs(10));
             loop {
+                if !app.state::<AppState>().settings().auto_update_check {
+                    log!("자동 업데이트 확인이 꺼져 있습니다.");
+                    return;
+                }
                 if check_and_maybe_install(&app) {
                     return; // 설치를 시작했다. 곧 프로세스가 끝난다.
                 }
