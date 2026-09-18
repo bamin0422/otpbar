@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>OTPBar</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header>
+    <div class="row">
+      <h1>OTPBar</h1>
+      <button id="mask" class="ghost" type="button">코드 가리기</button>
+    </div>
+    <p id="tray-notice" class="notice" hidden>
+      트레이 아이콘을 만들지 못해 이 창으로 대신 엽니다.
+    </p>
+    <input id="search" type="search" placeholder="발급자나 계정 이름으로 찾기" autocomplete="off">
+  </header>
+
+  <main>
+    <section id="locked" hidden>
+      <p>금고가 잠겨 있습니다.</p>
+      <button id="unlock" class="primary" type="button">잠금 해제</button>
+    </section>
+
+    <ul id="list"></ul>
+    <p id="empty" class="muted" hidden>등록된 계정이 없습니다.</p>
+    <p id="no-match" class="muted" hidden>찾는 계정이 없습니다.</p>
+  </main>
+
+  <footer>
+    <p id="status" class="muted" role="status"></p>
+    <div class="actions">
+      <button id="retry" type="button" hidden>트레이 다시 시도</button>
+      <button id="update" type="button">업데이트 확인</button>
+    </div>
+  </footer>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

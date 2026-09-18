@@ -5,7 +5,7 @@
 //! - 사용자와의 대화는 메뉴, 시스템 알림, 그리고 입력이 필요한 순간의 짧은 다이얼로그로 한다.
 
 mod agent;
-mod fallback;
+mod dashboard;
 mod log;
 mod prompt;
 mod state;
@@ -27,11 +27,12 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            fallback::fallback_list,
-            fallback::fallback_copy,
-            fallback::fallback_unlock,
-            fallback::fallback_retry_tray,
-            fallback::fallback_check_update,
+            dashboard::dashboard_list,
+            dashboard::dashboard_copy,
+            dashboard::dashboard_unlock,
+            dashboard::dashboard_toggle_mask,
+            dashboard::dashboard_retry_tray,
+            dashboard::dashboard_check_update,
         ])
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -90,7 +91,7 @@ pub fn run() {
             if let Err(e) = tray::create(&handle) {
                 // 여기서 실패하면 트레이도 창도 없다. 대체 창이 마지막 수단이다.
                 log!("트레이를 만들지 못했습니다: {e}");
-                fallback::open(&handle);
+                dashboard::open(&handle, dashboard::Reason::TrayFailed);
             } else {
                 log!("트레이를 만들었습니다. 등록 여부를 확인합니다.");
                 tray::watch_registration(&handle);
@@ -265,34 +266,99 @@ pub(crate) fn open_path(app: &tauri::AppHandle, path: &Path) {
 pub(crate) fn check_update_on_start(app: &tauri::AppHandle) {
     #[cfg(desktop)]
     {
+        /// 확인 간격. 오래 켜 두는 앱이므로 하루에 몇 번이면 충분하다.
+        const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
         let app = app.clone();
         std::thread::spawn(move || {
             // 켜자마자 네트워크를 쓰면 시작이 느려 보인다. 잠깐 미룬다.
             std::thread::sleep(Duration::from_secs(10));
-            tauri::async_runtime::spawn(async move {
-                use tauri_plugin_updater::UpdaterExt;
-                let Ok(updater) = app.updater() else {
-                    log!("업데이터를 쓸 수 없습니다.");
-                    return;
-                };
-                match updater.check().await {
-                    Ok(Some(update)) => {
-                        log!("새 버전 {}을 찾았습니다.", update.version);
-                        ui::notify(
-                            &app,
-                            "OTPBar 업데이트",
-                            &format!(
-                                "{} 버전이 나왔습니다. 메뉴의 '업데이트 확인'에서 설치하십시오.",
-                                update.version
-                            ),
-                        );
-                    }
-                    Ok(None) => log!("최신 상태입니다."),
-                    Err(e) => log!("업데이트 확인 실패: {e}"),
+            loop {
+                if check_and_maybe_install(&app) {
+                    return; // 설치를 시작했다. 곧 프로세스가 끝난다.
                 }
-            });
+                std::thread::sleep(EVERY);
+            }
         });
     }
+}
+
+/// 자동 설치를 해도 되는 상태인지 판단한다.
+///
+/// Windows 설치 경로는 `std::process::exit(0)`으로 앱을 즉시 끝낸다
+/// (`tauri-plugin-updater`의 `install_inner`). 코드를 복사하려는 순간에 걸리면 곤란하므로
+/// 한동안 손대지 않은 때만 진행한다.
+///
+/// 마스터 암호 보호를 쓰는 사용자는 제외한다. 재시작 뒤 암호를 다시 물어야 해서
+/// 편의를 주려는 기능이 오히려 번거로워진다.
+#[cfg(desktop)]
+fn may_auto_install(app: &tauri::AppHandle) -> bool {
+    /// 이만큼 조작이 없으면 자리를 비웠다고 본다.
+    const IDLE_SECS: u64 = 5 * 60;
+
+    let state = app.state::<AppState>();
+    state.auto_unlock_enabled() && state.idle_secs() >= IDLE_SECS
+}
+
+/// 업데이트를 확인하고, 조건이 맞으면 설치까지 한다. 설치를 시작했으면 `true`.
+#[cfg(desktop)]
+fn check_and_maybe_install(app: &tauri::AppHandle) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri_plugin_updater::UpdaterExt;
+        let started = match handle.updater() {
+            Ok(updater) => match updater.check().await {
+                Ok(Some(update)) => {
+                    let version = update.version.clone();
+                    log!("새 버전 {version}을 찾았습니다.");
+                    if may_auto_install(&handle) {
+                        ui::notify(
+                            &handle,
+                            "OTPBar 업데이트",
+                            &format!("{version} 설치를 시작합니다. 잠시 뒤 다시 켜집니다."),
+                        );
+                        match update.download_and_install(|_, _| {}, || {}).await {
+                            Ok(()) => {
+                                log!("{version} 설치를 마쳤습니다.");
+                                true
+                            }
+                            Err(e) => {
+                                log!("자동 설치 실패: {e}");
+                                false
+                            }
+                        }
+                    } else {
+                        // 쓰는 중이거나 암호 보호 사용자다. 알리고 다음 주기로 미룬다.
+                        log!("자동 설치 조건이 아닙니다. 알림만 띄웁니다.");
+                        ui::notify(
+                            &handle,
+                            "OTPBar 업데이트",
+                            &format!(
+                                "{version} 버전이 나왔습니다. 메뉴의 '업데이트 확인'에서 설치하실 수 있습니다."
+                            ),
+                        );
+                        false
+                    }
+                }
+                Ok(None) => {
+                    log!("최신 상태입니다.");
+                    false
+                }
+                Err(e) => {
+                    log!("업데이트 확인 실패: {e}");
+                    false
+                }
+            },
+            Err(e) => {
+                log!("업데이터를 쓸 수 없습니다: {e}");
+                false
+            }
+        };
+        tx.send(started).ok();
+    });
+    // 내려받기까지 포함하므로 넉넉히 기다린다. 응답이 없으면 다음 주기에 다시 본다.
+    rx.recv_timeout(Duration::from_secs(600)).unwrap_or(false)
 }
 
 /// 메뉴에서 업데이트를 확인하고, 있으면 바로 설치한다.

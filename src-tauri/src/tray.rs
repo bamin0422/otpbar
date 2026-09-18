@@ -20,6 +20,7 @@ pub const TRAY_ID: &str = "otpbar-tray";
 /// 메뉴바·트레이용 단색 아이콘. 컴파일 시점에 박아 두어 런타임 경로 문제를 없앤다.
 const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-mono@2x.png");
 
+const ID_DASHBOARD: &str = "dashboard";
 const ID_IMPORT: &str = "import";
 const ID_LOCK: &str = "lock";
 const ID_UNLOCK: &str = "unlock";
@@ -129,8 +130,8 @@ pub fn watch_registration(app: &AppHandle) {
             recreate(&app);
             delay = (delay * 2).min(30);
         }
-        crate::log!("트레이 등록에 끝내 실패했습니다. 대체 창을 엽니다.");
-        crate::fallback::open(&app);
+        crate::log!("트레이 등록에 끝내 실패했습니다. 대시보드를 대신 엽니다.");
+        crate::dashboard::open(&app, crate::dashboard::Reason::TrayFailed);
     });
 }
 
@@ -237,6 +238,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         }
     }
 
+    let dashboard = MenuItemBuilder::with_id(ID_DASHBOARD, "대시보드 열기").build(app)?;
     let import = MenuItemBuilder::with_id(ID_IMPORT, "QR 이미지에서 가져오기…").build(app)?;
     let mask = CheckMenuItemBuilder::with_id(ID_MASK, "코드 가려서 표시")
         .checked(settings.mask_codes)
@@ -256,6 +258,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 
     builder = builder
         .item(&PredefinedMenuItem::separator(app)?)
+        .item(&dashboard)
         .item(&import)
         .item(&mask)
         .item(&notify_code)
@@ -288,6 +291,7 @@ fn handle(app: &AppHandle, id: &str) {
             ui::refresh(app);
             ui::notify(app, "OTPBar", "잠갔습니다. 메뉴에서 다시 열 수 있습니다.");
         }
+        ID_DASHBOARD => crate::dashboard::open(app, crate::dashboard::Reason::User),
         ID_IMPORT => crate::import_via_dialog(app),
         ID_MASK => {
             let state = app.state::<AppState>();

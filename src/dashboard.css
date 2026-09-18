@@ -1,4 +1,4 @@
-/* 대체 창 전용 스타일. 평상시에는 쓰이지 않는다. */
+/* 대시보드 창. 메뉴바·트레이 메뉴를 대신하지 않고 보조한다. */
 
 :root {
   --bg: #ffffff;
@@ -8,6 +8,7 @@
   --surface: #f6f7f9;
   --accent: #2563eb;
   --accent-fg: #ffffff;
+  --track: #d7dae0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +20,7 @@
     --surface: #1f2226;
     --accent: #4d8dfd;
     --accent-fg: #0d1117;
+    --track: #3a3e44;
   }
 }
 
@@ -36,12 +38,38 @@ body {
   font: 14px/1.5 -apple-system, "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
 }
 
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 h1 { margin: 0; font-size: 16px; }
 
 .notice {
-  margin: 4px 0 0;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
   font-size: 13px;
   color: var(--muted);
+}
+
+#search {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+}
+
+#search:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 main { flex: 1; }
@@ -63,6 +91,9 @@ li + li { margin-top: 8px; }
 
 li:hover { border-color: var(--accent); }
 
+/* 방금 복사한 행 */
+li.copied { border-color: var(--accent); }
+
 .label {
   flex: 1;
   min-width: 0;
@@ -77,12 +108,10 @@ li:hover { border-color: var(--accent); }
   letter-spacing: 0.06em;
 }
 
-.remaining {
-  width: 3.5em;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
-}
+/* 남은 시간 원형 표시 */
+.ring { flex: none; width: 22px; height: 22px; transform: rotate(-90deg); }
+.ring-track { fill: none; stroke: var(--track); stroke-width: 3; }
+.ring-value { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
 
 .muted { color: var(--muted); font-size: 13px; }
 
@@ -109,6 +138,12 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
+}
+
+button.ghost {
+  padding: 4px 10px;
+  font-size: 13px;
+  background: transparent;
 }
 
 #status { min-height: 1.5em; margin: 0 0 8px; }

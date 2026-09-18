@@ -229,6 +229,11 @@ impl AppState {
         false
     }
 
+    /// 마지막 조작 이후 지난 시간(초).
+    pub fn idle_secs(&self) -> u64 {
+        self.lock_inner().last_activity.elapsed().as_secs()
+    }
+
     pub fn require_unlocked(&self) -> Result<()> {
         if self.is_unlocked() {
             Ok(())
