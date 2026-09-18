@@ -114,9 +114,12 @@ pub fn parse_otpauth(uri: &str) -> Result<NewAccount> {
 
     // 라벨이 "발급자:발급자:이름" 처럼 중복될 때 정리
     if !issuer.is_empty() {
-        let prefix = format!("{}:", issuer.to_lowercase());
-        if name.to_lowercase().starts_with(&prefix) {
-            name = name[prefix.len()..].trim().to_string();
+        // 소문자화는 바이트 길이를 바꾼다(ẞ 3바이트 → ß 2바이트). 소문자로 잰 길이로
+        // 원본을 자르면 문자 경계를 침범해 패닉하므로, 경계가 보장되는 split_once 로 나눈다.
+        if let Some((head, rest)) = name.split_once(':') {
+            if head.trim().to_lowercase() == issuer.to_lowercase() {
+                name = rest.trim().to_string();
+            }
         }
     }
     truncate(&mut issuer, MAX_LABEL_LEN);
@@ -303,9 +306,12 @@ fn parse_migration_param(buf: &[u8]) -> Result<Option<NewAccount>> {
             name = n.trim().to_string();
         }
     } else {
-        let prefix = format!("{}:", issuer.to_lowercase());
-        if name.to_lowercase().starts_with(&prefix) {
-            name = name[prefix.len()..].trim().to_string();
+        // 소문자화는 바이트 길이를 바꾼다(ẞ 3바이트 → ß 2바이트). 소문자로 잰 길이로
+        // 원본을 자르면 문자 경계를 침범해 패닉하므로, 경계가 보장되는 split_once 로 나눈다.
+        if let Some((head, rest)) = name.split_once(':') {
+            if head.trim().to_lowercase() == issuer.to_lowercase() {
+                name = rest.trim().to_string();
+            }
         }
     }
     truncate(&mut issuer, MAX_LABEL_LEN);
@@ -476,5 +482,20 @@ mod tests {
             1
         );
         assert!(parse_payload("hello world").is_err());
+    }
+
+    /// 라벨이 "발급자:발급자:이름"으로 중복되고, 발급자를 소문자로 바꾸면 바이트 길이가
+    /// 줄어드는 경우. "ẞ"(U+1E9E, 3바이트)는 소문자로 "ß"(U+00DF, 2바이트)가 된다.
+    ///
+    /// 첫 `:`에서 나눈 뒤 남은 이름은 "ẞẞ:x"(8바이트)이고 접두사 "ßß:"는 5바이트다.
+    /// 소문자 길이 5로 원본을 자르면 둘째 "ẞ"의 중간을 가리켜 문자 경계를 침범한다.
+    /// 릴리스 빌드는 `panic = "abort"`라 프로세스 전체가 중단된다.
+    #[test]
+    fn otpauth_duplicated_multibyte_issuer_prefix_is_not_panic() {
+        let uri = "otpauth://totp/\u{1e9e}\u{1e9e}:\u{1e9e}\u{1e9e}:x\
+                   ?secret=JBSWY3DPEHPK3PXP&issuer=\u{1e9e}\u{1e9e}";
+        let acc = parse_otpauth(uri).expect("파싱에 성공해야 한다");
+        assert_eq!(acc.issuer, "\u{1e9e}\u{1e9e}");
+        assert_eq!(acc.name, "x", "중복된 발급자 접두사는 제거되어야 한다");
     }
 }

@@ -1,10 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "OTPBar 트레이 앱에 필요한 최소 권한",
-  "windows": [
-    "fallback"
-  ],
+  "description": "Rust 쪽에서 쓰는 플러그인 권한. 웹뷰에는 부여하지 않는다",
+  "windows": [],
   "permissions": [
     "core:default",
     "clipboard-manager:allow-write-text",

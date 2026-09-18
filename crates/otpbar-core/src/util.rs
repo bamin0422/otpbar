@@ -34,7 +34,11 @@ pub fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
 }
 
-/// 실행 중 앱이 IPC 접속 정보를 적어 두는 파일(0600).
+/// 실행 중 앱이 IPC 접속 정보를 적어 두는 파일.
+///
+/// 권한은 유닉스에서 0600이다. Windows에는 권한을 설정하는 코드가 없으며 상위
+/// 폴더(`%APPDATA%`)의 ACL을 상속한다. 실질적으로는 사용자·SYSTEM·Administrators로
+/// 제한되지만, 앱이 보장하는 것이 아니라 운영체제 기본값에 기대는 것이다.
 pub fn runtime_path() -> PathBuf {
     config_dir().join("runtime.json")
 }

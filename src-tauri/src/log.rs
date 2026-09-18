@@ -31,7 +31,7 @@ pub fn path() -> PathBuf {
 pub fn write(args: Arguments<'_>) {
     let p = path();
     if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).ok();
+        otpbar_core::util::ensure_private_dir(dir).ok();
     }
     if std::fs::metadata(&p)
         .map(|m| m.len() > MAX_BYTES)
@@ -39,7 +39,7 @@ pub fn write(args: Arguments<'_>) {
     {
         std::fs::remove_file(&p).ok();
     }
-    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) else {
+    let Ok(mut f) = open_private(&p) else {
         return;
     };
     let elapsed = started_at().elapsed().as_secs_f64();
@@ -60,6 +60,26 @@ macro_rules! log {
     ($($arg:tt)*) => {
         $crate::log::write(format_args!($($arg)*))
     };
+}
+
+/// 소유자만 읽을 수 있게 연다. 금고 파일과 같은 기준을 로그에도 적용한다.
+///
+/// 코드나 계정 이름은 적지 않지만, 어느 보호 모드를 쓰는지가 드러난다. 같은 기기의
+/// 다른 사용자에게 공격 대상을 알려 줄 이유가 없다.
+#[cfg(unix)]
+fn open_private(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(p)
+}
+
+/// Windows에는 대응하는 모드 설정이 없다. 상위 폴더(`%APPDATA%`)의 ACL을 상속한다.
+#[cfg(not(unix))]
+fn open_private(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    OpenOptions::new().create(true).append(true).open(p)
 }
 
 fn stamp() -> String {

@@ -1,0 +1,20 @@
+version: 2
+
+# 워크플로의 액션은 커밋 SHA로 고정되어 있다. 고정만 해 두면 보안 수정이 들어와도
+# 따라가지 못하므로, 갱신을 여기서 자동화한다.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore"
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore"
+    # 크레이트가 많아 한꺼번에 열리면 검토가 어렵다. 보안 수정이 묻히지 않을 만큼만 연다.
+    open-pull-requests-limit: 5

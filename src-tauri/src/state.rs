@@ -113,6 +113,19 @@ impl AppState {
         let mut inner = self.lock_inner();
         inner.vault.unlock(password)?;
         inner.last_activity = Instant::now();
+
+        // 2.1.1까지의 결함으로 경량 KDF에 봉인된 마스터 암호 금고를 여기서 올린다.
+        // 암호를 아는 순간이 이때뿐이다. 자동 해제 금고는 경량이 정상이므로 건너뛴다.
+        if !otpbar_core::autounlock::is_enabled() {
+            match inner
+                .vault
+                .upgrade_password_kdf(password, otpbar_core::crypto::KdfParams::default())
+            {
+                Ok(true) => crate::log!("마스터 암호 금고의 KDF 비용을 기본값으로 올렸습니다."),
+                Ok(false) => {}
+                Err(e) => crate::log!("KDF 비용을 올리지 못했습니다: {e}"),
+            }
+        }
         Ok(())
     }
 

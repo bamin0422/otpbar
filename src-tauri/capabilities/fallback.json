@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "fallback-window",
+  "description": "대체 창에 주는 최소 권한. 이 창은 앱이 정의한 fallback_* 명령만 쓴다",
+  "windows": [
+    "fallback"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

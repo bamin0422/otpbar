@@ -285,8 +285,34 @@ impl Vault {
         self.key = None;
     }
 
+    /// 봉인된 금고의 KDF 비용이 목표보다 낮으면 같은 암호로 다시 봉인한다.
+    /// 올렸으면 `true`를 돌려준다.
+    ///
+    /// 2.1.1까지 [`Vault::change_password`]가 호출자의 파라미터를 잃어버려, 마스터 암호
+    /// 보호를 켠 금고가 경량 KDF로 봉인되었다. 그 금고들은 스스로 복구되지 않으므로
+    /// 암호를 아는 시점, 곧 잠금 해제 직후에 한 번 올려 준다.
+    ///
+    /// 자동 해제 금고는 경량이 정상이다(무작위 256비트 키를 쓰므로 사전 공격이
+    /// 성립하지 않는다). 그 판단은 자격증명 저장소를 아는 호출자가 한다.
+    pub fn upgrade_password_kdf(&mut self, password: &str, target: KdfParams) -> Result<bool> {
+        if self.kdf_params.m_cost >= target.m_cost {
+            return Ok(false);
+        }
+        self.kdf_params = target;
+        self.change_password(password, password)?;
+        Ok(true)
+    }
+
     pub fn change_password(&mut self, current: &str, new_password: &str) -> Result<()> {
+        // `unlock`은 `self.kdf_params`를 파일에 적힌 값으로 되돌린다. 호출자가 비용을
+        // 바꾸려고 미리 지정해 둔 값이 거기서 사라지므로 여기서 지킨다.
+        //
+        // 이 한 줄이 없어서, 자동 해제 금고(경량 KDF)에서 마스터 암호 보호를 켜면
+        // 사람이 정한 암호가 경량 KDF로 봉인되었다. 보호를 강화하려고 켠 기능이
+        // 실제로는 강화되지 않던 결함이다(2.1.1까지).
+        let target = self.kdf_params;
         self.unlock(current)?;
+        self.kdf_params = target;
         if new_password.chars().count() < 8 {
             return Err(Error::InvalidParams(
                 "마스터 암호는 8자 이상이어야 합니다".into(),
@@ -646,6 +672,79 @@ mod tests {
         let mut v = tmp.vault();
         assert!(v.create("1234567").is_err(), "8자 미만은 거부");
         v.create("12345678").unwrap();
+    }
+
+    /// `enable_password_protection`이 하는 것과 같은 순서를 그대로 재현한다.
+    /// 자동 해제 금고(경량 KDF)에서 사람이 정한 암호로 바꾸면서 비용을 올리는 흐름이다.
+    #[test]
+    fn raising_kdf_before_change_password_is_not_lost() {
+        let tmp = TempVault::new("kdf-raise");
+        let light = KdfParams {
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let heavy = KdfParams {
+            m_cost: 64,
+            t_cost: 2,
+            p_cost: 1,
+        };
+
+        let mut v = tmp.vault();
+        v.create("random-auto-unlock-key").unwrap();
+        assert_eq!(
+            tmp.reopen().kdf_params,
+            light,
+            "준비: 금고가 경량 KDF로 봉인되어 있다"
+        );
+
+        v.set_kdf_params(heavy);
+        v.change_password("random-auto-unlock-key", "사람이 정한 암호")
+            .unwrap();
+
+        assert_eq!(
+            tmp.reopen().kdf_params,
+            heavy,
+            "사람이 정한 암호는 올린 비용으로 유도되어 파일에 기록되어야 한다"
+        );
+    }
+
+    /// 2.1.1까지의 결함으로 사람이 정한 암호가 경량 KDF로 봉인된 금고를 재현하고,
+    /// 암호를 아는 시점에 비용이 올라가는지 확인한다.
+    #[test]
+    fn weak_password_kdf_is_upgraded_once() {
+        let tmp = TempVault::new("kdf-migrate");
+        let light = KdfParams {
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let heavy = KdfParams {
+            m_cost: 64,
+            t_cost: 2,
+            p_cost: 1,
+        };
+
+        let mut v = tmp.vault();
+        v.create("사람이 정한 암호").unwrap();
+        v.add(sample(), false).unwrap();
+        assert_eq!(tmp.reopen().kdf_params, light, "준비: 경량으로 봉인된 금고");
+
+        let mut v = tmp.reopen();
+        assert!(
+            v.upgrade_password_kdf("사람이 정한 암호", heavy).unwrap(),
+            "비용이 낮으면 다시 봉인한다"
+        );
+        assert_eq!(tmp.reopen().kdf_params, heavy);
+
+        // 계정은 그대로 열려야 한다
+        let mut v = tmp.reopen();
+        v.unlock("사람이 정한 암호").unwrap();
+        assert_eq!(v.accounts().unwrap().len(), 1, "내용이 보존되어야 한다");
+
+        // 이미 충분하면 아무것도 하지 않는다
+        let mut v = tmp.reopen();
+        assert!(!v.upgrade_password_kdf("사람이 정한 암호", heavy).unwrap());
     }
 
     #[test]
